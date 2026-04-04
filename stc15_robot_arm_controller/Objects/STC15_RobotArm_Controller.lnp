@@ -1,0 +1,3 @@
+".\Objects\main.obj" 
+TO ".\Objects\STC15_RobotArm_Controller" 
+PRINT(".\Listings\STC15_RobotArm_Controller.m51") RAMSIZE(256) 

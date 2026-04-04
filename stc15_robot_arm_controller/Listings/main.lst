@@ -1,0 +1,879 @@
+C51 COMPILER V9.57.0.0   MAIN                                                              03/30/2026 13:32:20 PAGE 1   
+
+
+C51 COMPILER V9.57.0.0, COMPILATION OF MODULE MAIN
+OBJECT MODULE PLACED IN .\Objects\main.obj
+COMPILER INVOKED BY: D:\Keil_v5\C51\BIN\C51.EXE main.c OPTIMIZE(8,SPEED) BROWSE INCDIR(.\) DEBUG OBJECTEXTEND PRINT(.\Li
+                    -stings\main.lst) TABS(2) OBJECT(.\Objects\main.obj)
+
+line level    source
+
+   1          #include "iap15w4k61s4.h"
+   2          #include <intrins.h>
+   3          
+   4          #define FOSC                  11059200UL
+   5          #define UART_BAUD             9600UL
+   6          #define TIMER0_TICK_US        20U
+   7          #define SERVO_FRAME_US        20000U
+   8          #define SERVO_FRAME_TICKS     (SERVO_FRAME_US / TIMER0_TICK_US)
+   9          #define TIMER0_RELOAD         (65536UL - (FOSC / (1000000UL / TIMER0_TICK_US)))
+  10          #define UART1_RELOAD          (256UL - (FOSC / 12UL / 32UL / UART_BAUD))
+  11          
+  12          #define JOINT_COUNT           3U
+  13          #define OUTPUT_COUNT          5U
+  14          #define SERVO_MIN_US          500U
+  15          #define SERVO_MAX_US          2500U
+  16          #define CMD_BUF_SIZE          64U
+  17          #define DEFAULT_GRAB_MS       500U
+  18          
+  19          #define JOINT1_HOME_DEG       60U
+  20          #define JOINT2_HOME_DEG       70U
+  21          #define JOINT3_HOME_DEG       60U
+  22          
+  23          #define PUMP_OUTPUT_ID        4U
+  24          #define VALVE_OUTPUT_ID       5U
+  25          #define PUMP_PWM_ON_US        2000U
+  26          #define PUMP_PWM_OFF_US       1000U
+  27          #define VALVE_CLOSED_PWM_US   2000U
+  28          #define VALVE_OPEN_PWM_US     1000U
+  29          
+  30          #define EEPROM_BASE_ADDR      0x0400U
+  31          #define EEPROM_SECTOR_SIZE    512U
+  32          #define EEPROM_RECORD_SIZE    10U
+  33          #define EEPROM_MAGIC          0xA5U
+  34          #define EEPROM_VERSION        0x01U
+  35          #define EEPROM_COMMIT         0x5AU
+  36          #define EEPROM_CMD_IDLE       0U
+  37          #define EEPROM_CMD_READ       1U
+  38          #define EEPROM_CMD_PROGRAM    2U
+  39          #define EEPROM_CMD_ERASE      3U
+  40          #define EEPROM_ENABLE         0x83U /* SYSCLK < 12MHz, see STC15 datasheet */
+  41          
+  42          #define JOINT1_REVERSED       0
+  43          #define JOINT2_REVERSED       0
+  44          #define JOINT3_REVERSED       0
+  45          
+  46          static volatile u16 frame_tick = 0;
+  47          static volatile u16 grab_frames_left = 0;
+  48          static volatile bit cmd_ready = 0;
+  49          static volatile u8 cmd_len = 0;
+  50          static volatile u8 rx_len = 0;
+  51          static volatile u8 xdata cmd_buf[CMD_BUF_SIZE];
+  52          
+  53          static u16 servo_current_us[OUTPUT_COUNT];
+  54          static u16 servo_target_us[OUTPUT_COUNT];
+C51 COMPILER V9.57.0.0   MAIN                                                              03/30/2026 13:32:20 PAGE 2   
+
+  55          static u16 servo_frames_left[OUTPUT_COUNT];
+  56          static u16 servo_pulse_ticks[OUTPUT_COUNT];
+  57          static u16 persisted_pose_us[JOINT_COUNT];
+  58          static bit persisted_pose_valid = 0;
+  59          static u16 eeprom_next_addr = EEPROM_BASE_ADDR;
+  60          static u8 xdata parse_buf[CMD_BUF_SIZE];
+  61          static u8 xdata parse_ids[JOINT_COUNT];
+  62          static u16 xdata parse_values[JOINT_COUNT];
+  63          
+  64          static u16 clamp_servo_us(u16 pulse_us);
+  65          static u16 default_joint_home_pulse(u8 joint_id);
+  66          static void servo_schedule_move(u8 servo_id, u16 pulse_us, u16 move_time_ms);
+  67          static u16 angle_to_pulse(u8 servo_id, u16 angle);
+  68          
+  69          static void timer0_reload(void)
+  70          {
+  71   1          TH0 = (u8)(TIMER0_RELOAD >> 8);
+  72   1          TL0 = (u8)TIMER0_RELOAD;
+  73   1      }
+  74          
+  75          static void iap_idle(void)
+  76          {
+  77   1          IAP_CONTR = 0;
+  78   1          IAP_CMD = EEPROM_CMD_IDLE;
+  79   1          IAP_TRIG = 0;
+  80   1          IAP_ADDRH = 0x80;
+  81   1          IAP_ADDRL = 0;
+  82   1      }
+  83          
+  84          static u8 iap_read_byte(u16 addr)
+  85          {
+  86   1          u8 dat;
+  87   1      
+  88   1          IAP_CONTR = EEPROM_ENABLE;
+  89   1          IAP_CMD = EEPROM_CMD_READ;
+  90   1          IAP_ADDRL = (u8)addr;
+  91   1          IAP_ADDRH = (u8)(addr >> 8);
+  92   1          IAP_TRIG = 0x5A;
+  93   1          IAP_TRIG = 0xA5;
+  94   1          _nop_();
+  95   1          dat = IAP_DATA;
+  96   1          iap_idle();
+  97   1          return dat;
+  98   1      }
+  99          
+ 100          static void iap_program_byte(u16 addr, u8 dat)
+ 101          {
+ 102   1          bit old_ea = EA;
+ 103   1      
+ 104   1          EA = 0;
+ 105   1          IAP_CONTR = EEPROM_ENABLE;
+ 106   1          IAP_CMD = EEPROM_CMD_PROGRAM;
+ 107   1          IAP_ADDRL = (u8)addr;
+ 108   1          IAP_ADDRH = (u8)(addr >> 8);
+ 109   1          IAP_DATA = dat;
+ 110   1          IAP_TRIG = 0x5A;
+ 111   1          IAP_TRIG = 0xA5;
+ 112   1          _nop_();
+ 113   1          iap_idle();
+ 114   1          EA = old_ea;
+ 115   1      }
+ 116          
+C51 COMPILER V9.57.0.0   MAIN                                                              03/30/2026 13:32:20 PAGE 3   
+
+ 117          static void iap_erase_sector(u16 addr)
+ 118          {
+ 119   1          bit old_ea = EA;
+ 120   1      
+ 121   1          EA = 0;
+ 122   1          IAP_CONTR = EEPROM_ENABLE;
+ 123   1          IAP_CMD = EEPROM_CMD_ERASE;
+ 124   1          IAP_ADDRL = (u8)addr;
+ 125   1          IAP_ADDRH = (u8)(addr >> 8);
+ 126   1          IAP_TRIG = 0x5A;
+ 127   1          IAP_TRIG = 0xA5;
+ 128   1          _nop_();
+ 129   1          iap_idle();
+ 130   1          EA = old_ea;
+ 131   1      }
+ 132          
+ 133          static u8 pose_checksum(const u16* pose)
+ 134          {
+ 135   1          u8 i;
+ 136   1          u8 sum = (u8)(EEPROM_MAGIC ^ EEPROM_VERSION);
+ 137   1      
+ 138   1          for (i = 0; i < JOINT_COUNT; i++)
+ 139   1          {
+ 140   2              sum ^= (u8)pose[i];
+ 141   2              sum ^= (u8)(pose[i] >> 8);
+ 142   2          }
+ 143   1      
+ 144   1          return sum;
+ 145   1      }
+ 146          
+ 147          static void copy_pose(u16* dst, const u16* src)
+ 148          {
+ 149   1          u8 i;
+ 150   1      
+ 151   1          for (i = 0; i < JOINT_COUNT; i++)
+ 152   1          {
+ 153   2              dst[i] = src[i];
+ 154   2          }
+ 155   1      }
+ 156          
+ 157          static u8 pose_equals(const u16* left, const u16* right)
+ 158          {
+ 159   1          u8 i;
+ 160   1      
+ 161   1          for (i = 0; i < JOINT_COUNT; i++)
+ 162   1          {
+ 163   2              if (left[i] != right[i])
+ 164   2              {
+ 165   3                  return 0;
+ 166   3              }
+ 167   2          }
+ 168   1      
+ 169   1          return 1;
+ 170   1      }
+ 171          
+ 172          static void eeprom_write_pose_record(const u16* pose)
+ 173          {
+ 174   1          u8 i;
+ 175   1          u8 checksum;
+ 176   1          u16 end_addr = (u16)(EEPROM_BASE_ADDR + EEPROM_SECTOR_SIZE);
+ 177   1      
+ 178   1          if (persisted_pose_valid && pose_equals(pose, persisted_pose_us))
+C51 COMPILER V9.57.0.0   MAIN                                                              03/30/2026 13:32:20 PAGE 4   
+
+ 179   1          {
+ 180   2              return;
+ 181   2          }
+ 182   1      
+ 183   1          if ((u16)(eeprom_next_addr + EEPROM_RECORD_SIZE) > end_addr)
+ 184   1          {
+ 185   2              iap_erase_sector(EEPROM_BASE_ADDR);
+ 186   2              eeprom_next_addr = EEPROM_BASE_ADDR;
+ 187   2          }
+ 188   1      
+ 189   1          checksum = pose_checksum(pose);
+ 190   1      
+ 191   1          iap_program_byte(eeprom_next_addr + 0U, EEPROM_MAGIC);
+ 192   1          iap_program_byte(eeprom_next_addr + 1U, EEPROM_VERSION);
+ 193   1          for (i = 0; i < JOINT_COUNT; i++)
+ 194   1          {
+ 195   2              iap_program_byte((u16)(eeprom_next_addr + 2U + (u16)i * 2U), (u8)pose[i]);
+ 196   2              iap_program_byte((u16)(eeprom_next_addr + 3U + (u16)i * 2U), (u8)(pose[i] >> 8));
+ 197   2          }
+ 198   1          iap_program_byte(eeprom_next_addr + 8U, checksum);
+ 199   1          iap_program_byte(eeprom_next_addr + 9U, EEPROM_COMMIT);
+ 200   1      
+ 201   1          copy_pose(persisted_pose_us, pose);
+ 202   1          persisted_pose_valid = 1;
+ 203   1          eeprom_next_addr = (u16)(eeprom_next_addr + EEPROM_RECORD_SIZE);
+ 204   1      }
+ 205          
+ 206          static void persist_current_pose(void)
+ 207          {
+ 208   1          eeprom_write_pose_record(servo_current_us);
+ 209   1      }
+ 210          
+ 211          static void move_to_home_pose(u16 move_time_ms)
+ 212          {
+ 213   1          u8 i;
+ 214   1          u16 pulse_us;
+ 215   1      
+ 216   1          for (i = 0; i < JOINT_COUNT; i++)
+ 217   1          {
+ 218   2              pulse_us = persisted_pose_valid ? persisted_pose_us[i] : default_joint_home_pulse((u8)(i + 1U));
+ 219   2              servo_schedule_move((u8)(i + 1U), pulse_us, move_time_ms);
+ 220   2          }
+ 221   1      }
+ 222          
+ 223          static void eeprom_load_last_pose(void)
+ 224          {
+ 225   1          u16 addr = EEPROM_BASE_ADDR;
+ 226   1          u16 end_addr = (u16)(EEPROM_BASE_ADDR + EEPROM_SECTOR_SIZE);
+ 227   1          u16 pose[JOINT_COUNT];
+ 228   1          u8 checksum;
+ 229   1          u8 i;
+ 230   1      
+ 231   1          persisted_pose_valid = 0;
+ 232   1          eeprom_next_addr = EEPROM_BASE_ADDR;
+ 233   1      
+ 234   1          while ((u16)(addr + EEPROM_RECORD_SIZE) <= end_addr)
+ 235   1          {
+ 236   2              if (iap_read_byte(addr + 9U) != EEPROM_COMMIT)
+ 237   2              {
+ 238   3                  break;
+ 239   3              }
+ 240   2      
+C51 COMPILER V9.57.0.0   MAIN                                                              03/30/2026 13:32:20 PAGE 5   
+
+ 241   2              if (iap_read_byte(addr + 0U) != EEPROM_MAGIC ||
+ 242   2                  iap_read_byte(addr + 1U) != EEPROM_VERSION)
+ 243   2              {
+ 244   3                  break;
+ 245   3              }
+ 246   2      
+ 247   2              for (i = 0; i < JOINT_COUNT; i++)
+ 248   2              {
+ 249   3                  pose[i] = (u16)iap_read_byte((u16)(addr + 2U + (u16)i * 2U));
+ 250   3                  pose[i] |= (u16)((u16)iap_read_byte((u16)(addr + 3U + (u16)i * 2U)) << 8);
+ 251   3                  pose[i] = clamp_servo_us(pose[i]);
+ 252   3              }
+ 253   2      
+ 254   2              checksum = iap_read_byte(addr + 8U);
+ 255   2              if (checksum != pose_checksum(pose))
+ 256   2              {
+ 257   3                  break;
+ 258   3              }
+ 259   2      
+ 260   2              copy_pose(persisted_pose_us, pose);
+ 261   2              persisted_pose_valid = 1;
+ 262   2              eeprom_next_addr = (u16)(addr + EEPROM_RECORD_SIZE);
+ 263   2              addr = (u16)(addr + EEPROM_RECORD_SIZE);
+ 264   2          }
+ 265   1      }
+ 266          
+ 267          static u16 clamp_servo_us(u16 pulse_us)
+ 268          {
+ 269   1          if (pulse_us < SERVO_MIN_US)
+ 270   1          {
+ 271   2              pulse_us = SERVO_MIN_US;
+ 272   2          }
+ 273   1          else if (pulse_us > SERVO_MAX_US)
+ 274   1          {
+ 275   2              pulse_us = SERVO_MAX_US;
+ 276   2          }
+ 277   1      
+ 278   1          return pulse_us;
+ 279   1      }
+ 280          
+ 281          static u16 pulse_us_to_ticks(u16 pulse_us)
+ 282          {
+ 283   1          pulse_us = clamp_servo_us(pulse_us);
+ 284   1          return (u16)((pulse_us + (TIMER0_TICK_US / 2U)) / TIMER0_TICK_US);
+ 285   1      }
+ 286          
+ 287          static u16 default_joint_home_pulse(u8 joint_id)
+ 288          {
+ 289   1          if (joint_id == 1U)
+ 290   1          {
+ 291   2              return angle_to_pulse(1U, JOINT1_HOME_DEG);
+ 292   2          }
+ 293   1      
+ 294   1          if (joint_id == 2U)
+ 295   1          {
+ 296   2              return angle_to_pulse(2U, JOINT2_HOME_DEG);
+ 297   2          }
+ 298   1      
+ 299   1          return angle_to_pulse(3U, JOINT3_HOME_DEG);
+ 300   1      }
+ 301          
+ 302          static void servo_write_pin(u8 index, bit level)
+C51 COMPILER V9.57.0.0   MAIN                                                              03/30/2026 13:32:20 PAGE 6   
+
+ 303          {
+ 304   1          switch (index)
+ 305   1          {
+ 306   2              case 0: P50 = level; break; /* joint 1 / base */
+ 307   2              case 1: P34 = level; break; /* joint 2 / big arm */
+ 308   2              case 2: P04 = level; break; /* joint 3 / small arm */
+ 309   2              case 3: P53 = level; break; /* pump switch module */
+ 310   2              default: P05 = level; break; /* valve switch module */
+ 311   2          }
+ 312   1      }
+ 313          
+ 314          static void all_servo_pins_low(void)
+ 315          {
+ 316   1          P50 = 0;
+ 317   1          P34 = 0;
+ 318   1          P04 = 0;
+ 319   1          P53 = 0;
+ 320   1          P05 = 0;
+ 321   1      }
+ 322          
+ 323          static void output_write_immediate(u8 output_id, u16 pulse_us)
+ 324          {
+ 325   1          u8 index;
+ 326   1      
+ 327   1          if (output_id < 1U || output_id > OUTPUT_COUNT)
+ 328   1          {
+ 329   2              return;
+ 330   2          }
+ 331   1      
+ 332   1          index = (u8)(output_id - 1U);
+ 333   1          pulse_us = clamp_servo_us(pulse_us);
+ 334   1          servo_current_us[index] = pulse_us;
+ 335   1          servo_target_us[index] = pulse_us;
+ 336   1          servo_frames_left[index] = 0;
+ 337   1          servo_pulse_ticks[index] = pulse_us_to_ticks(pulse_us);
+ 338   1      }
+ 339          
+ 340          static void pump_write(u8 on)
+ 341          {
+ 342   1          output_write_immediate(PUMP_OUTPUT_ID, on ? PUMP_PWM_ON_US : PUMP_PWM_OFF_US);
+ 343   1      }
+ 344          
+ 345          static void valve_write_closed(u8 closed)
+ 346          {
+ 347   1          output_write_immediate(VALVE_OUTPUT_ID, closed ? VALVE_CLOSED_PWM_US : VALVE_OPEN_PWM_US);
+ 348   1      }
+ 349          
+ 350          static void gpio_init(void)
+ 351          {
+ 352   1          /* P0.4 / P0.5 */
+ 353   1          P0M0 |= 0x30;
+ 354   1          P0M1 &= (u8)~0x30;
+ 355   1      
+ 356   1          /* P3.4 */
+ 357   1          P3M0 |= 0x10;
+ 358   1          P3M1 &= (u8)~0x10;
+ 359   1      
+ 360   1          /* P5.0 / P5.2 / P5.3 */
+ 361   1          P5M0 |= 0x0D;
+ 362   1          P5M1 &= (u8)~0x0D;
+ 363   1      
+ 364   1          all_servo_pins_low();
+C51 COMPILER V9.57.0.0   MAIN                                                              03/30/2026 13:32:20 PAGE 7   
+
+ 365   1          pump_write(0);
+ 366   1          valve_write_closed(0);
+ 367   1          P52 = 0; /* spare blue port 5 */
+ 368   1      }
+ 369          
+ 370          static void servo_init_state(void)
+ 371          {
+ 372   1          u8 i;
+ 373   1          u16 init_us;
+ 374   1      
+ 375   1          for (i = 0; i < JOINT_COUNT; i++)
+ 376   1          {
+ 377   2              init_us = persisted_pose_valid ? persisted_pose_us[i] : default_joint_home_pulse((u8)(i + 1U));
+ 378   2              servo_current_us[i] = init_us;
+ 379   2              servo_target_us[i] = init_us;
+ 380   2              servo_frames_left[i] = 0;
+ 381   2              servo_pulse_ticks[i] = pulse_us_to_ticks(init_us);
+ 382   2          }
+ 383   1      
+ 384   1          output_write_immediate(PUMP_OUTPUT_ID, PUMP_PWM_OFF_US);
+ 385   1          output_write_immediate(VALVE_OUTPUT_ID, VALVE_OPEN_PWM_US);
+ 386   1      }
+ 387          
+ 388          static void servo_apply_frame_step(void)
+ 389          {
+ 390   1          u8 i;
+ 391   1      
+ 392   1          for (i = 0; i < OUTPUT_COUNT; i++)
+ 393   1          {
+ 394   2              if (servo_frames_left[i] > 0)
+ 395   2              {
+ 396   3                  int diff = (int)servo_target_us[i] - (int)servo_current_us[i];
+ 397   3      
+ 398   3                  if (servo_frames_left[i] == 1 || diff == 0)
+ 399   3                  {
+ 400   4                      servo_current_us[i] = servo_target_us[i];
+ 401   4                      servo_frames_left[i] = 0;
+ 402   4                  }
+ 403   3                  else
+ 404   3                  {
+ 405   4                      int step = diff / (int)servo_frames_left[i];
+ 406   4                      if (step == 0)
+ 407   4                      {
+ 408   5                          step = (diff > 0) ? 1 : -1;
+ 409   5                      }
+ 410   4                      servo_current_us[i] = (u16)((int)servo_current_us[i] + step);
+ 411   4                      servo_frames_left[i] = (u16)(servo_frames_left[i] - 1U);
+ 412   4                  }
+ 413   3              }
+ 414   2      
+ 415   2              servo_pulse_ticks[i] = pulse_us_to_ticks(servo_current_us[i]);
+ 416   2          }
+ 417   1      }
+ 418          
+ 419          static void servo_schedule_move(u8 servo_id, u16 pulse_us, u16 move_time_ms)
+ 420          {
+ 421   1          u8 index;
+ 422   1          u16 frames;
+ 423   1      
+ 424   1          if (servo_id < 1 || servo_id > OUTPUT_COUNT)
+ 425   1          {
+ 426   2              return;
+C51 COMPILER V9.57.0.0   MAIN                                                              03/30/2026 13:32:20 PAGE 8   
+
+ 427   2          }
+ 428   1      
+ 429   1          index = (u8)(servo_id - 1U);
+ 430   1          pulse_us = clamp_servo_us(pulse_us);
+ 431   1          frames = move_time_ms / 20U;
+ 432   1          if (frames == 0)
+ 433   1          {
+ 434   2              frames = 1;
+ 435   2          }
+ 436   1      
+ 437   1          servo_target_us[index] = pulse_us;
+ 438   1          servo_frames_left[index] = frames;
+ 439   1      }
+ 440          
+ 441          static void servo_stop_all(void)
+ 442          {
+ 443   1          u8 i;
+ 444   1      
+ 445   1          for (i = 0; i < OUTPUT_COUNT; i++)
+ 446   1          {
+ 447   2              servo_target_us[i] = servo_current_us[i];
+ 448   2              servo_frames_left[i] = 0;
+ 449   2          }
+ 450   1      }
+ 451          
+ 452          static u8 is_digit(u8 ch)
+ 453          {
+ 454   1          return (u8)(ch >= '0' && ch <= '9');
+ 455   1      }
+ 456          
+ 457          static u16 parse_number(const u8* buf, u8* pos, u8 len, u8* ok)
+ 458          {
+ 459   1          u16 value = 0;
+ 460   1          u8 has_digit = 0;
+ 461   1      
+ 462   1          while (*pos < len && is_digit(buf[*pos]))
+ 463   1          {
+ 464   2              has_digit = 1;
+ 465   2              value = (u16)(value * 10U + (u16)(buf[*pos] - '0'));
+ 466   2              (*pos)++;
+ 467   2          }
+ 468   1      
+ 469   1          *ok = has_digit;
+ 470   1          return value;
+ 471   1      }
+ 472          
+ 473          static u16 angle_to_pulse(u8 servo_id, u16 angle)
+ 474          {
+ 475   1          u16 pulse;
+ 476   1      
+ 477   1          if (angle > 180U)
+ 478   1          {
+ 479   2              angle = 180U;
+ 480   2          }
+ 481   1      
+ 482   1          if ((servo_id == 1U && JOINT1_REVERSED) ||
+ 483   1              (servo_id == 2U && JOINT2_REVERSED) ||
+ 484   1              (servo_id == 3U && JOINT3_REVERSED))
+ 485   1          {
+ 486   2              angle = (u16)(180U - angle);
+ 487   2          }
+ 488   1      
+C51 COMPILER V9.57.0.0   MAIN                                                              03/30/2026 13:32:20 PAGE 9   
+
+ 489   1          pulse = (u16)(SERVO_MIN_US + ((u32)(SERVO_MAX_US - SERVO_MIN_US) * angle) / 180UL);
+ 490   1          return clamp_servo_us(pulse);
+ 491   1      }
+ 492          
+ 493          static u8 starts_with(const u8* buf, u8 len, const char* text)
+ 494          {
+ 495   1          u8 i = 0;
+ 496   1      
+ 497   1          while (text[i] != 0)
+ 498   1          {
+ 499   2              if (i >= len || buf[i] != (u8)text[i])
+ 500   2              {
+ 501   3                  return 0;
+ 502   3              }
+ 503   2              i++;
+ 504   2          }
+ 505   1      
+ 506   1          return 1;
+ 507   1      }
+ 508          
+ 509          static void start_grab(u16 pump_time_ms)
+ 510          {
+ 511   1          u16 frames = pump_time_ms / 20U;
+ 512   1      
+ 513   1          if (frames == 0)
+ 514   1          {
+ 515   2              frames = 1;
+ 516   2          }
+ 517   1      
+ 518   1          valve_write_closed(1);
+ 519   1          pump_write(1);
+ 520   1          grab_frames_left = frames;
+ 521   1      }
+ 522          
+ 523          static void release_object(void)
+ 524          {
+ 525   1          grab_frames_left = 0;
+ 526   1          pump_write(0);
+ 527   1          valve_write_closed(0);
+ 528   1      }
+ 529          
+ 530          static void handle_special_command(void)
+ 531          {
+ 532   1          u8 ok;
+ 533   1          u8 pos;
+ 534   1          u16 value;
+ 535   1      
+ 536   1          if (starts_with(parse_buf, cmd_len, "#STOP"))
+ 537   1          {
+ 538   2              servo_stop_all();
+ 539   2              return;
+ 540   2          }
+ 541   1      
+ 542   1          if (starts_with(parse_buf, cmd_len, "#SAVEHOME"))
+ 543   1          {
+ 544   2              persist_current_pose();
+ 545   2              return;
+ 546   2          }
+ 547   1      
+ 548   1          if (starts_with(parse_buf, cmd_len, "#HOME"))
+ 549   1          {
+ 550   2              pos = 5;
+C51 COMPILER V9.57.0.0   MAIN                                                              03/30/2026 13:32:20 PAGE 10  
+
+ 551   2              value = parse_number(parse_buf, &pos, cmd_len, &ok);
+ 552   2              if (!ok)
+ 553   2              {
+ 554   3                  value = 800U;
+ 555   3              }
+ 556   2              move_to_home_pose(value);
+ 557   2              return;
+ 558   2          }
+ 559   1      
+ 560   1          if (starts_with(parse_buf, cmd_len, "#PUMP"))
+ 561   1          {
+ 562   2              if (cmd_len >= 6U)
+ 563   2              {
+ 564   3                  pump_write((u8)(parse_buf[5] == '1'));
+ 565   3                  if (parse_buf[5] == '1')
+ 566   3                  {
+ 567   4                      grab_frames_left = 0;
+ 568   4                  }
+ 569   3              }
+ 570   2              return;
+ 571   2          }
+ 572   1      
+ 573   1          if (starts_with(parse_buf, cmd_len, "#VALVE"))
+ 574   1          {
+ 575   2              if (cmd_len >= 7U)
+ 576   2              {
+ 577   3                  valve_write_closed((u8)(parse_buf[6] == '1'));
+ 578   3              }
+ 579   2              return;
+ 580   2          }
+ 581   1      
+ 582   1          if (starts_with(parse_buf, cmd_len, "#GRAB"))
+ 583   1          {
+ 584   2              pos = 5;
+ 585   2              value = parse_number(parse_buf, &pos, cmd_len, &ok);
+ 586   2              if (!ok)
+ 587   2              {
+ 588   3                  value = DEFAULT_GRAB_MS;
+ 589   3              }
+ 590   2              start_grab(value);
+ 591   2              return;
+ 592   2          }
+ 593   1      
+ 594   1          if (starts_with(parse_buf, cmd_len, "#RELEASE"))
+ 595   1          {
+ 596   2              release_object();
+ 597   2          }
+ 598   1      }
+ 599          
+ 600          static void handle_motion_command(void)
+ 601          {
+ 602   1          u8 pos = 0;
+ 603   1          u8 i;
+ 604   1          u8 count = 0;
+ 605   1          u8 ok;
+ 606   1          u16 move_time_ms = 0;
+ 607   1          u8 mode;
+ 608   1          u16 value;
+ 609   1      
+ 610   1          while (pos < cmd_len)
+ 611   1          {
+ 612   2              if (parse_buf[pos] != '#')
+C51 COMPILER V9.57.0.0   MAIN                                                              03/30/2026 13:32:20 PAGE 11  
+
+ 613   2              {
+ 614   3                  return;
+ 615   3              }
+ 616   2              pos++;
+ 617   2      
+ 618   2              if (count >= JOINT_COUNT)
+ 619   2              {
+ 620   3                  return;
+ 621   3              }
+ 622   2      
+ 623   2              parse_ids[count] = (u8)parse_number(parse_buf, &pos, cmd_len, &ok);
+ 624   2              if (!ok || pos >= cmd_len || parse_ids[count] < 1U || parse_ids[count] > JOINT_COUNT)
+ 625   2              {
+ 626   3                  return;
+ 627   3              }
+ 628   2      
+ 629   2              mode = parse_buf[pos++];
+ 630   2              value = parse_number(parse_buf, &pos, cmd_len, &ok);
+ 631   2              if (!ok)
+ 632   2              {
+ 633   3                  return;
+ 634   3              }
+ 635   2      
+ 636   2              if (mode == 'A')
+ 637   2              {
+ 638   3                  parse_values[count] = angle_to_pulse(parse_ids[count], value);
+ 639   3              }
+ 640   2              else if (mode == 'P')
+ 641   2              {
+ 642   3                  parse_values[count] = clamp_servo_us(value);
+ 643   3              }
+ 644   2              else
+ 645   2              {
+ 646   3                  return;
+ 647   3              }
+ 648   2      
+ 649   2              count++;
+ 650   2      
+ 651   2              if (pos < cmd_len && parse_buf[pos] == 'T')
+ 652   2              {
+ 653   3                  pos++;
+ 654   3                  move_time_ms = parse_number(parse_buf, &pos, cmd_len, &ok);
+ 655   3                  if (!ok)
+ 656   3                  {
+ 657   4                      return;
+ 658   4                  }
+ 659   3                  break;
+ 660   3              }
+ 661   2          }
+ 662   1      
+ 663   1          if (move_time_ms == 0)
+ 664   1          {
+ 665   2              move_time_ms = 100U;
+ 666   2          }
+ 667   1      
+ 668   1          for (i = 0; i < count; i++)
+ 669   1          {
+ 670   2              servo_schedule_move(parse_ids[i], parse_values[i], move_time_ms);
+ 671   2          }
+ 672   1      
+ 673   1      }
+ 674          
+C51 COMPILER V9.57.0.0   MAIN                                                              03/30/2026 13:32:20 PAGE 12  
+
+ 675          static void handle_ascii_command(void)
+ 676          {
+ 677   1          u8 i;
+ 678   1      
+ 679   1          if (!cmd_ready)
+ 680   1          {
+ 681   2              return;
+ 682   2          }
+ 683   1      
+ 684   1          EA = 0;
+ 685   1          for (i = 0; i < cmd_len; i++)
+ 686   1          {
+ 687   2              parse_buf[i] = cmd_buf[i];
+ 688   2          }
+ 689   1          parse_buf[cmd_len] = 0;
+ 690   1          cmd_ready = 0;
+ 691   1          EA = 1;
+ 692   1      
+ 693   1          if (cmd_len == 0)
+ 694   1          {
+ 695   2              return;
+ 696   2          }
+ 697   1      
+ 698   1          if (starts_with(parse_buf, cmd_len, "#STOP") ||
+ 699   1              starts_with(parse_buf, cmd_len, "#SAVEHOME") ||
+ 700   1              starts_with(parse_buf, cmd_len, "#HOME") ||
+ 701   1              starts_with(parse_buf, cmd_len, "#PUMP") ||
+ 702   1              starts_with(parse_buf, cmd_len, "#VALVE") ||
+ 703   1              starts_with(parse_buf, cmd_len, "#GRAB") ||
+ 704   1              starts_with(parse_buf, cmd_len, "#RELEASE"))
+ 705   1          {
+ 706   2              handle_special_command();
+ 707   2              return;
+ 708   2          }
+ 709   1      
+ 710   1          handle_motion_command();
+ 711   1      }
+ 712          
+ 713          static void uart1_init(void)
+ 714          {
+ 715   1          AUXR &= (u8)~AUXR_UART1_T2;
+ 716   1          TMOD &= 0x0F;
+ 717   1          TMOD |= 0x20;
+ 718   1          TH1 = (u8)UART1_RELOAD;
+ 719   1          TL1 = (u8)UART1_RELOAD;
+ 720   1          SCON = 0x50;
+ 721   1          TR1 = 1;
+ 722   1          ES = 1;
+ 723   1      }
+ 724          
+ 725          static void timer0_init(void)
+ 726          {
+ 727   1          AUXR |= AUXR_T0_1T;
+ 728   1          TMOD &= 0xF0;
+ 729   1          TMOD |= 0x01;
+ 730   1          timer0_reload();
+ 731   1          ET0 = 1;
+ 732   1          TR0 = 1;
+ 733   1      }
+ 734          
+ 735          void timer0_isr(void) interrupt 1
+ 736          {
+C51 COMPILER V9.57.0.0   MAIN                                                              03/30/2026 13:32:20 PAGE 13  
+
+ 737   1          u8 i;
+ 738   1      
+ 739   1          timer0_reload();
+ 740   1      
+ 741   1          if (frame_tick == 0)
+ 742   1          {
+ 743   2              servo_apply_frame_step();
+ 744   2              for (i = 0; i < OUTPUT_COUNT; i++)
+ 745   2              {
+ 746   3                  servo_write_pin(i, 1);
+ 747   3              }
+ 748   2      
+ 749   2              if (grab_frames_left > 0)
+ 750   2              {
+ 751   3                  grab_frames_left--;
+ 752   3                  if (grab_frames_left == 0)
+ 753   3                  {
+ 754   4                      pump_write(0);
+ 755   4                  }
+ 756   3              }
+ 757   2          }
+ 758   1      
+ 759   1          for (i = 0; i < OUTPUT_COUNT; i++)
+ 760   1          {
+ 761   2              if (frame_tick == servo_pulse_ticks[i])
+ 762   2              {
+ 763   3                  servo_write_pin(i, 0);
+ 764   3              }
+ 765   2          }
+ 766   1      
+ 767   1          frame_tick++;
+ 768   1          if (frame_tick >= SERVO_FRAME_TICKS)
+ 769   1          {
+ 770   2              frame_tick = 0;
+ 771   2          }
+ 772   1      }
+ 773          
+ 774          void uart1_isr(void) interrupt 4
+ 775          {
+ 776   1          u8 value;
+ 777   1      
+ 778   1          if (RI)
+ 779   1          {
+ 780   2              RI = 0;
+ 781   2              value = SBUF;
+ 782   2      
+ 783   2              if (!cmd_ready)
+ 784   2              {
+ 785   3                  if (value == '\n')
+ 786   3                  {
+ 787   4                      if (rx_len > 0 && cmd_buf[rx_len - 1U] == '\r')
+ 788   4                      {
+ 789   5                          rx_len--;
+ 790   5                      }
+ 791   4                      cmd_len = rx_len;
+ 792   4                      rx_len = 0;
+ 793   4                      cmd_ready = 1;
+ 794   4                  }
+ 795   3                  else if (value != 0)
+ 796   3                  {
+ 797   4                      if (rx_len < (u8)(CMD_BUF_SIZE - 1U))
+ 798   4                      {
+C51 COMPILER V9.57.0.0   MAIN                                                              03/30/2026 13:32:20 PAGE 14  
+
+ 799   5                          cmd_buf[rx_len++] = value;
+ 800   5                      }
+ 801   4                      else
+ 802   4                      {
+ 803   5                          rx_len = 0;
+ 804   5                      }
+ 805   4                  }
+ 806   3              }
+ 807   2          }
+ 808   1      
+ 809   1          if (TI)
+ 810   1          {
+ 811   2              TI = 0;
+ 812   2          }
+ 813   1      }
+ 814          
+ 815          void main(void)
+ 816          {
+ 817   1          gpio_init();
+ 818   1          eeprom_load_last_pose();
+ 819   1          servo_init_state();
+ 820   1          uart1_init();
+ 821   1          timer0_init();
+ 822   1      
+ 823   1          EA = 1;
+ 824   1      
+ 825   1          while (1)
+ 826   1          {
+ 827   2              handle_ascii_command();
+ 828   2          }
+ 829   1      }
+
+
+MODULE INFORMATION:   STATIC OVERLAYABLE
+   CODE SIZE        =   3148    ----
+   CONSTANT SIZE    =     50    ----
+   XDATA SIZE       =    137    ----
+   PDATA SIZE       =   ----    ----
+   DATA SIZE        =     54      75
+   IDATA SIZE       =   ----    ----
+   BIT SIZE         =      2       3
+END OF MODULE INFORMATION.
+
+
+C51 COMPILATION COMPLETE.  0 WARNING(S),  0 ERROR(S)
