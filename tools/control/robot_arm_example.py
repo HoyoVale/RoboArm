@@ -1,4 +1,4 @@
-from tools.robot_arm_controller import RobotArmController
+from tools.control.robot_arm_controller import RobotArmController
 
 
 def main() -> None:

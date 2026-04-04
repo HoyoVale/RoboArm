@@ -5,15 +5,13 @@
 ## 文件位置
 
 - 可直接 `import` 的通信模块：
-  - [robot_arm_controller.py](/mnt/c/Users/hoyo/Desktop/jixiebi/tools/robot_arm_controller.py)
+  [robot_arm_controller.py](/mnt/d/hoyo/Documents/Projects/机械臂视觉抓取/tools/control/robot_arm_controller.py)
 - 命令行调试脚本：
-  - [arm_controller_sender.py](/mnt/c/Users/hoyo/Desktop/jixiebi/tools/arm_controller_sender.py)
+  [arm_controller_sender.py](/mnt/d/hoyo/Documents/Projects/机械臂视觉抓取/tools/control/arm_controller_sender.py)
 - 最小示例脚本：
-  - [robot_arm_example.py](/mnt/c/Users/hoyo/Desktop/jixiebi/tools/robot_arm_example.py)
+  [robot_arm_example.py](/mnt/d/hoyo/Documents/Projects/机械臂视觉抓取/tools/control/robot_arm_example.py)
 
 ## 依赖
-
-需要安装：
 
 ```bash
 python -m pip install pyserial
@@ -23,20 +21,20 @@ python -m pip install pyserial
 
 - 波特率：`9600`
 - 数据格式：`8N1`
-- 默认端口示例：`COM7`
+- 默认端口示例：`COM5`
 
 注意：
 
 - 同一时刻只能有一个程序占用串口
-- 正式上位机程序运行时，不要同时开启 `shell` 调试模式
-- 推荐上位机程序启动后保持串口常开，不要频繁开关
+- 正式上位机运行时，不要同时开调试脚本
+- 推荐主程序启动后保持串口常开，不要频繁开关
 
 ## 模块导入方式
 
 如果你的主程序放在项目根目录下，可以这样导入：
 
 ```python
-from tools.robot_arm_controller import RobotArmController
+from tools.control.robot_arm_controller import RobotArmController
 ```
 
 ## 已封装接口
@@ -64,8 +62,6 @@ from tools.robot_arm_controller import RobotArmController
 
 ## 当前默认 Home 位姿
 
-当前代码中的默认位姿是：
-
 - `1号 = 60°`
 - `2号 = 70°`
 - `3号 = 60°`
@@ -74,12 +70,12 @@ from tools.robot_arm_controller import RobotArmController
 
 ## 气泵与电磁阀逻辑
 
-当前硬件已验证可用的抓取流程是：
+当前硬件验证过的抓取流程：
 
 1. `valve_close()`
 2. `pump_on()`
 3. 物体吸住后 `pump_off()`
-4. 需要放下时 `valve_open()`
+4. 放下时 `valve_open()`
 
 也可以直接使用：
 
@@ -89,9 +85,9 @@ from tools.robot_arm_controller import RobotArmController
 ## 最小示例
 
 ```python
-from tools.robot_arm_controller import RobotArmController
+from tools.control.robot_arm_controller import RobotArmController
 
-with RobotArmController(port="COM7", baud=9600) as arm:
+with RobotArmController(port="COM5", baud=9600) as arm:
     arm.home(800)
     arm.move_angles({1: 60, 2: 70, 3: 60}, 800)
     arm.valve_close()
@@ -102,10 +98,10 @@ with RobotArmController(port="COM7", baud=9600) as arm:
 
 ## 建议的上位机调用方式
 
-推荐把机械臂控制封装成你视觉程序中的一个长期存在对象，例如：
+推荐把机械臂控制对象长期保留：
 
 ```python
-arm = RobotArmController(port="COM7", baud=9600)
+arm = RobotArmController(port="COM5", baud=9600)
 arm.open()
 ```
 
@@ -115,10 +111,8 @@ arm.open()
 - `arm.grab(...)`
 - `arm.release()`
 
-程序退出前再：
+程序退出前：
 
 ```python
 arm.close()
 ```
-
-这样更稳，也更接近正式自动控制程序的结构。

@@ -2,15 +2,26 @@ import argparse
 import shlex
 import sys
 
-from robot_arm_controller import (
-    DEFAULT_GRAB_MS,
-    HOME_MOVE_TIME_MS,
-    RobotArmController,
-    build_angle_command,
-    build_home_command,
-    build_pulse_command,
-    ensure_crlf,
-)
+try:
+    from tools.control.robot_arm_controller import (
+        DEFAULT_GRAB_MS,
+        HOME_MOVE_TIME_MS,
+        RobotArmController,
+        build_angle_command,
+        build_home_command,
+        build_pulse_command,
+        ensure_crlf,
+    )
+except ImportError:
+    from robot_arm_controller import (
+        DEFAULT_GRAB_MS,
+        HOME_MOVE_TIME_MS,
+        RobotArmController,
+        build_angle_command,
+        build_home_command,
+        build_pulse_command,
+        ensure_crlf,
+    )
 
 
 def build_text_for_action(args: argparse.Namespace) -> str:
@@ -184,7 +195,7 @@ def run_shell(port: str, baud: int) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Send commands to the STC15 robot arm lower controller.")
-    parser.add_argument("--port", default="COM7", help="Serial port, for example COM7")
+    parser.add_argument("--port", default="COM5", help="Serial port, for example COM5")
     parser.add_argument("--baud", type=int, default=9600, help="Serial baud rate")
     subparsers = parser.add_subparsers(dest="action", required=True)
 

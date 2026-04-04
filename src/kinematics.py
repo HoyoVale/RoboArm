@@ -1,121 +1,177 @@
+from __future__ import annotations
+
 import math
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class _PlanarSolution:
+    servo1_deg: float
+    servo2_deg: float
+    servo3_deg: float
+
 
 class PalletizingArmKinematics:
-    def __init__(self):
-        # 机械臂参数 (单位: mm)
-        self.L1 = 260.0  # 大臂长度
-        self.L2 = 260.0  # 小臂等效长度
-        
-        # 考虑到机械结构可能存在初始偏置，这些值可以在实际联调时微调
-        # 根据物理校准：标准姿态 (大臂垂直向上，小臂水平向前，底座朝前) 对应的硬件角度为:
-        # 1号: 60度, 2号: 70度, 3号: 60度
-        self.servo1_zero = 60.0
-        self.servo2_zero = 70.0
-        self.servo3_zero = 60.0
-        
-        # 机械臂结构特性：
-        # 根据图片标注，260mm 是从【底座最底部】一直到【大臂顶端】的总高度。
-        # 因此，在我们的数学模型中，大臂旋转的虚拟支点就相当于在 Z=0（桌面）的位置，
-        # 不需要再加底座高度偏置了。
+    """
+    3 自由度吸盘机械臂的平面逆运动学模型。
 
-    def inverse_kinematics(self, x, y, z):
-        """
-        逆运动学求解：输入目标空间坐标 (x, y, z)，返回三个舵机的角度 (theta1, theta2, theta3)
-        坐标系定义 (物理世界坐标系)：
-        - 原点：机械臂底座旋转中心在地面的投影点
-        - X轴：正前方 (单位 mm)
-        - Y轴：左侧为正 (单位 mm)
-        - Z轴：以桌面为 0 的高度 (单位 mm)
-        """
-        # -----------------------------
-        # 1. 计算1号舵机（底座旋转角度）
-        # -----------------------------
-        # 目标点在 XY 平面上的投影距离
-        r = math.sqrt(x**2 + y**2)
-        
-        # 安全限制：检查是否在工作范围内 (170mm ~ 400mm)
-        if r < 170.0 or r > 400.0:
-            print(f"警告：目标点水平距离 {r:.1f} mm 超出工作范围 (170-400mm)！")
+    建模约定：
+    - 原点在底座旋转中心投影到桌面的点
+    - X 正前方，Y 左侧，Z 桌面向上
+    - L1/L2 把肩关节基点放到 (r=L2, z=L1)
+    - L5 始终水平，L6 始终竖直向下
+    - 2 号舵机对应 L3 的绝对角
+    - 3 号舵机对应 L4 相对 L3 的夹角，而不是 L4 的绝对角
+    - 2 号舵机角度增大时，机械臂向前伸
+    - 3 号舵机角度增大时，末端下降
+
+    这个模型与实机校准一致：
+    - servo2 = 70° 时，L3 竖直
+    - servo3 = 60° 时，L4 水平
+    """
+
+    def __init__(self) -> None:
+        # 连杆参数，单位 mm
+        self.L1 = 70.0
+        self.L2 = 20.0
+        self.L3 = 155.0
+        self.L4 = 160.0
+        self.L5 = 35.0
+        self.L6_nominal = 38.0
+
+        # 实机校准零位
+        self.servo1_home = 60.0
+        self.servo2_home = 70.0
+        self.servo3_home = 60.0
+
+        # 文档给出的安全范围
+        self.servo1_doc_min = -30.0
+        self.servo1_doc_max = 150.0
+        self.servo2_min = 50.0
+        self.servo2_max = 150.0
+        self.servo3_min = 40.0
+        self.servo3_max = 130.0
+
+        # 下位机角度接口使用 0~180，所以上位机还要满足硬件可发送范围。
+        self.servo1_cmd_min = 0.0
+        self.servo1_cmd_max = 150.0
+
+    def _servo1_from_xy(self, x_mm: float, y_mm: float) -> float:
+        yaw_deg = math.degrees(math.atan2(y_mm, x_mm))
+        return self.servo1_home + yaw_deg
+
+    def _wrist_target(self, radial_mm: float, z_mm: float) -> tuple[float, float]:
+        # 吸盘接触点 -> 腕点
+        wrist_r_mm = radial_mm - self.L5
+        wrist_z_mm = z_mm + self.L6_nominal
+        return wrist_r_mm, wrist_z_mm
+
+    def _is_servo_valid(self, servo1_deg: float, servo2_deg: float, servo3_deg: float) -> bool:
+        return (
+            self.servo1_cmd_min <= servo1_deg <= self.servo1_cmd_max
+            and self.servo2_min <= servo2_deg <= self.servo2_max
+            and self.servo3_min <= servo3_deg <= self.servo3_max
+        )
+
+    def inverse_kinematics(self, x_mm: float, y_mm: float, z_mm: float) -> tuple[float, float, float] | None:
+        radial_mm = math.hypot(x_mm, y_mm)
+        if radial_mm <= 1e-6:
             return None
-            
-        # 1号舵机：角度增加 -> 向左旋转。物理零点是 60度。
-        # 假设底座旋转角 theta1_rad 在 [-pi/2, pi/2] 之间 (右为负，左为正)
-        theta1_rad = math.atan2(y, x)
-        # 角度 = 零点 + 计算出的偏移角度
-        theta1_deg = self.servo1_zero + math.degrees(theta1_rad)
 
-        # -----------------------------
-        # 2. 计算2号和3号舵机（大臂和小臂角度）
-        # -----------------------------
-        # 在 r-z 平面上，目标点距离原点的直线距离 L3
-        L3 = math.sqrt(r**2 + z**2)
-        
-        # 检查是否超长 (无法到达)
-        if L3 > (self.L1 + self.L2):
-            print("警告：目标点太远，机械臂无法到达！")
+        servo1_deg = self._servo1_from_xy(x_mm, y_mm)
+
+        wrist_r_mm, wrist_z_mm = self._wrist_target(radial_mm, z_mm)
+        dx = wrist_r_mm - self.L2
+        dz = wrist_z_mm - self.L1
+
+        distance_sq = dx * dx + dz * dz
+        distance_mm = math.sqrt(distance_sq)
+        if distance_mm > (self.L3 + self.L4) or distance_mm < abs(self.L3 - self.L4):
             return None
 
-        # 使用余弦定理求内角
-        # a: 大臂与 L3 的夹角
-        cos_a = (self.L1**2 + L3**2 - self.L2**2) / (2 * self.L1 * L3)
-        # 限制 cos_a 在 [-1, 1] 之间，防止浮点数精度问题导致 math.acos 报错
-        cos_a = max(-1.0, min(1.0, cos_a))
-        angle_a = math.acos(cos_a)
+        cos_relative = (distance_sq - self.L3 * self.L3 - self.L4 * self.L4) / (2.0 * self.L3 * self.L4)
+        cos_relative = max(-1.0, min(1.0, cos_relative))
+        sin_relative_abs = math.sqrt(max(0.0, 1.0 - cos_relative * cos_relative))
 
-        # beta: L3 与水平面(r轴)的夹角
-        beta = math.atan2(z, r)
+        solutions: list[_PlanarSolution] = []
+        for elbow_sign in (-1.0, 1.0):
+            theta_rel = math.atan2(elbow_sign * sin_relative_abs, cos_relative)
+            shoulder_rad = math.atan2(dz, dx) - math.atan2(
+                self.L4 * math.sin(theta_rel),
+                self.L3 + self.L4 * math.cos(theta_rel),
+            )
 
-        # 计算大臂与水平面的真实仰角
-        # 注意：这里有两种解（肘部朝上或肘部朝下），对于这种机械臂通常采用肘部朝上(Elbow Up)的姿态
-        theta2_rad = beta + angle_a
-        
-        # 计算大小臂之间的夹角 (这里算的是小臂连杆与大臂的相对夹角)
-        cos_b = (self.L1**2 + self.L2**2 - L3**2) / (2 * self.L1 * self.L2)
-        cos_b = max(-1.0, min(1.0, cos_b))
-        angle_b = math.acos(cos_b)
-        
-        # 由于是平行四边形结构，3号舵机控制的是后方拉杆，它等效于控制小臂与水平面的绝对夹角。
-        # 几何推导：小臂与水平面的夹角 theta3_rad = theta2_rad - angle_b (或者相对角度，具体取决于3号舵机安装方式)
-        # 这里假设 3 号舵机 90 度时小臂水平，且舵机角度与小臂相对水平面的仰角成正比。
-        theta3_rad = theta2_rad - angle_b 
+            shoulder_deg = math.degrees(shoulder_rad)
+            relative_deg = math.degrees(theta_rel)
 
-        # 转换为角度 (假设大臂水平向前为0度，垂直向上为90度)
-        theta2_deg = math.degrees(theta2_rad)
-        theta3_deg = math.degrees(theta3_rad)
+            # 2 号舵机零位时 L3 竖直向上，对应数学角 90°。
+            # 舵机角度增大时，L3 向前摆，整体更前伸。
+            servo2_deg = self.servo2_home + (90.0 - shoulder_deg)
+            # 3 号舵机零位时 L4 水平向前，此时 L4 相对 L3 的夹角为 -90°。
+            # 舵机角度增大时，相对夹角更负，L4 向下压，末端下降。
+            servo3_deg = self.servo3_home + (-90.0 - relative_deg)
 
-        # -----------------------------
-        # 3. 映射到实际舵机角度 (0-180度)
-        # -----------------------------
-        # 2号舵机：角度减小 -> 向前倾斜。这意味着算法算出的仰角 theta2_deg 越大，硬件角度越小。
-        # 标准姿态时大臂垂直 (算法角度 90度) -> 硬件角度 70度
-        # 当大臂向前倾斜 (算法角度 < 90度) -> 硬件角度 > 70度 (因为硬件减小是向前，增加是向后)
-        # 映射关系: 硬件角度 = 70 - (算法角度 - 90) = 160 - 算法角度
-        final_theta2 = 160.0 - theta2_deg
-        
-        # 3号舵机：角度增加 -> 向上抬起。
-        # 标准姿态时小臂水平 (算法角度 0度) -> 硬件角度 60度
-        # 映射关系: 硬件角度 = 60 + 算法角度
-        final_theta3 = self.servo3_zero + theta3_deg
-        
-        # 限制角度范围
-        final_theta1 = max(0.0, min(180.0, theta1_deg))
-        final_theta2 = max(0.0, min(180.0, final_theta2))
-        final_theta3 = max(0.0, min(180.0, final_theta3))
-        
-        return (round(final_theta1, 1), round(final_theta2, 1), round(final_theta3, 1))
+            if self._is_servo_valid(servo1_deg, servo2_deg, servo3_deg):
+                solutions.append(
+                    _PlanarSolution(
+                        servo1_deg=servo1_deg,
+                        servo2_deg=servo2_deg,
+                        servo3_deg=servo3_deg,
+                    )
+                )
 
-# --- 测试代码 ---
+        if not solutions:
+            return None
+
+        best = min(
+            solutions,
+            key=lambda item: (
+                abs(item.servo1_deg - self.servo1_home)
+                + abs(item.servo2_deg - self.servo2_home)
+                + abs(item.servo3_deg - self.servo3_home)
+            ),
+        )
+        return (
+            round(best.servo1_deg, 1),
+            round(best.servo2_deg, 1),
+            round(best.servo3_deg, 1),
+        )
+
+    def forward_kinematics(self, servo1_deg: float, servo2_deg: float, servo3_deg: float) -> tuple[float, float, float]:
+        yaw_rad = math.radians(servo1_deg - self.servo1_home)
+        shoulder_deg = 90.0 - (servo2_deg - self.servo2_home)
+        relative_deg = -90.0 - (servo3_deg - self.servo3_home)
+
+        shoulder_rad = math.radians(shoulder_deg)
+        forearm_rad = shoulder_rad + math.radians(relative_deg)
+
+        radial_mm = (
+            self.L2
+            + self.L3 * math.cos(shoulder_rad)
+            + self.L4 * math.cos(forearm_rad)
+            + self.L5
+        )
+        z_mm = (
+            self.L1
+            + self.L3 * math.sin(shoulder_rad)
+            + self.L4 * math.sin(forearm_rad)
+            - self.L6_nominal
+        )
+
+        x_mm = radial_mm * math.cos(yaw_rad)
+        y_mm = radial_mm * math.sin(yaw_rad)
+        return round(x_mm, 1), round(y_mm, 1), round(z_mm, 1)
+
+
 if __name__ == "__main__":
     arm = PalletizingArmKinematics()
-    
-    # 测试点 1：正前方，水平距离 200mm，高度 50mm
-    print("测试点 1 (x=200, y=0, z=50):")
-    angles = arm.inverse_kinematics(260, 0, 260)
-    if angles:
-        print(f"舵机角度 -> 1号(底座): {angles[0]}°, 2号(大臂): {angles[1]}°, 3号(小臂): {angles[2]}°\n")
-
-    # 测试点 2：左前方，x=150, y=150 (距离约212mm), 高度 0mm
-    print("测试点 2 (x=150, y=150, z=0):")
-    angles = arm.inverse_kinematics(270, 10, 270)
-    if angles:
-        print(f"舵机角度 -> 1号(底座): {angles[0]}°, 2号(大臂): {angles[1]}°, 3号(小臂): {angles[2]}°\n")
+    home_angles = (60.0, 70.0, 60.0)
+    print("Home FK:", arm.forward_kinematics(*home_angles))
+    sample_targets = (
+        (170.0, 0.0, 70.0),
+        (230.0, 0.0, 70.0),
+        (200.0, 200.0, 70.0),
+    )
+    for target in sample_targets:
+        result = arm.inverse_kinematics(*target)
+        print("IK", target, "->", result)
