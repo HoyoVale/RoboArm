@@ -49,9 +49,10 @@ Vacuum commands:
 Notes:
 
 - default angle mapping is linear `0..180 -> 500..2500us`
-- current default home pose in code is `joint1=60`, `joint2=70`, `joint3=60`
+- current default home pose in code is `joint1=60`, `joint2=65`, `joint3=55`
 - use `#SAVEHOME` to save the current pose to internal EEPROM
 - on reboot, the controller restores the saved home pose instead of always forcing `90/90/90`
+- if an old saved home pose already exists in EEPROM, it overrides the compile-time default until you save the new pose again
 - use `#HOME800` to move back to the saved home pose in `800ms`
 - pump/valve are now driven as PWM-triggered switch modules instead of plain GPIO levels
 - current default switch pulses are:

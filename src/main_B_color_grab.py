@@ -50,6 +50,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cooldown-sec", type=float, default=AUTO_COOLDOWN_SEC)
     parser.add_argument("--stable-frames", type=int, default=AUTO_STABLE_FRAMES)
     parser.add_argument("--stable-jitter-mm", type=float, default=AUTO_STABLE_POSITION_JITTER_MM)
+    parser.add_argument("--debug-select", action="store_true", help="打印颜色目标筛选调试日志")
     return parser
 
 
@@ -62,7 +63,7 @@ def contour_contact_point(contour: np.ndarray) -> tuple[int, int]:
     return contact_u, contact_v
 
 
-def select_best_target(frame, workspace, executor, pick_z_mm: float):
+def select_best_target(frame, workspace, executor, pick_z_mm: float, debug: bool = False):
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     lower_red1 = np.array(COLOR_LOWER_RED_1)
     upper_red1 = np.array(COLOR_UPPER_RED_1)
@@ -78,14 +79,30 @@ def select_best_target(frame, workspace, executor, pick_z_mm: float):
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     contours = sorted(contours, key=cv2.contourArea, reverse=True)
 
-    for contour in contours:
+    if debug:
+        print(f"[ColorSelect] contours={len(contours)} pick_z={pick_z_mm:.1f}")
+
+    for index, contour in enumerate(contours, start=1):
         (center, radius) = cv2.minEnclosingCircle(contour)
         if radius < COLOR_MIN_RADIUS_PX:
+            if debug:
+                print(
+                    f"[ColorSelect] contour#{index} skip: "
+                    f"radius={radius:.1f} < min_radius={COLOR_MIN_RADIUS_PX:.1f}"
+                )
             continue
 
         contact_u, contact_v = contour_contact_point(contour)
         target_x_mm, target_y_mm = workspace.pixel_to_table(contact_u, contact_v)
-        if not executor.can_execute_target(target_x_mm, target_y_mm, pick_z_mm):
+        can_execute = executor.can_execute_target(target_x_mm, target_y_mm, pick_z_mm)
+        if debug:
+            print(
+                f"[ColorSelect] contour#{index} "
+                f"radius={radius:.1f} pixel=({contact_u}, {contact_v}) "
+                f"table=({target_x_mm:.1f}, {target_y_mm:.1f}, {pick_z_mm:.1f}) "
+                f"reachable={can_execute}"
+            )
+        if not can_execute:
             continue
 
         target = TargetObservation(
@@ -96,8 +113,16 @@ def select_best_target(frame, workspace, executor, pick_z_mm: float):
             x_mm=target_x_mm,
             y_mm=target_y_mm,
         )
+        if debug:
+            print(
+                f"[ColorSelect] selected contour#{index}: "
+                f"pixel=({contact_u}, {contact_v}) "
+                f"table=({target_x_mm:.1f}, {target_y_mm:.1f}, {pick_z_mm:.1f})"
+            )
         return target, contour, mask
 
+    if debug and contours:
+        print("[ColorSelect] no selectable contour in this sample window")
     return None, None, mask
 
 
@@ -207,6 +232,7 @@ def main() -> int:
     busy = False
     cooldown_until = 0.0
     resolution_checked = False
+    frame_index = 0
 
     print("[*] 颜色抓取系统启动。")
     while True:
@@ -214,6 +240,7 @@ def main() -> int:
         if not ok:
             print("[-] 摄像头读取失败。")
             break
+        frame_index += 1
 
         if not resolution_checked:
             try:
@@ -231,7 +258,14 @@ def main() -> int:
         stable_target = None
 
         if not busy:
-            current_target, current_contour, mask = select_best_target(frame, workspace, executor, args.pick_z)
+            debug_select_now = args.debug_select and (frame_index % 10 == 0)
+            current_target, current_contour, mask = select_best_target(
+                frame,
+                workspace,
+                executor,
+                args.pick_z,
+                debug=debug_select_now,
+            )
             stable, stable_frames, stable_target = tracker.update(current_target)
         else:
             stable = False

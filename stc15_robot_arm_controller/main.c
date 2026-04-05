@@ -17,8 +17,8 @@
 #define DEFAULT_GRAB_MS       500U
 
 #define JOINT1_HOME_DEG       60U
-#define JOINT2_HOME_DEG       70U
-#define JOINT3_HOME_DEG       60U
+#define JOINT2_HOME_DEG       65U
+#define JOINT3_HOME_DEG       55U
 
 #define PUMP_OUTPUT_ID        4U
 #define VALVE_OUTPUT_ID       5U

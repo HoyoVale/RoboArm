@@ -7,7 +7,15 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from src.config import HOMOGRAPHY_MATRIX_PATH, HOMOGRAPHY_META_PATH
+from src.config import (
+    HOMOGRAPHY_MATRIX_PATH,
+    HOMOGRAPHY_META_PATH,
+    WORKSPACE_SWAP_XY,
+    WORKSPACE_X_OFFSET_MM,
+    WORKSPACE_X_SIGN,
+    WORKSPACE_Y_OFFSET_MM,
+    WORKSPACE_Y_SIGN,
+)
 
 
 class WorkspaceCalibrationError(RuntimeError):
@@ -85,4 +93,13 @@ class WorkspaceTransform:
         point = np.array([[[u, v]]], dtype=np.float32)
         transformed = cv2.perspectiveTransform(point, self.matrix)
         x_mm, y_mm = transformed[0][0]
+        return self._apply_robot_axis_mapping(float(x_mm), float(y_mm))
+
+    @staticmethod
+    def _apply_robot_axis_mapping(x_mm: float, y_mm: float) -> tuple[float, float]:
+        if WORKSPACE_SWAP_XY:
+            x_mm, y_mm = y_mm, x_mm
+
+        x_mm = x_mm * WORKSPACE_X_SIGN + WORKSPACE_X_OFFSET_MM
+        y_mm = y_mm * WORKSPACE_Y_SIGN + WORKSPACE_Y_OFFSET_MM
         return float(x_mm), float(y_mm)

@@ -9,16 +9,17 @@ import cv2
 import numpy as np
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[2] # 获取项目根目录
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+# 导入参数配置和工具函数
 from src.config import CAMERA_HEIGHT, CAMERA_INDEX, CAMERA_WIDTH, ensure_runtime_dirs
 
 
 WINDOW_NAME = "Four Point Calibration"
 POINT_ORDER_TEXT = "左上 -> 右上 -> 右下 -> 左下"
-image_points: list[tuple[int, int]] = []
+image_points: list[tuple[int, int]] = [] # 一个图像点的结构体
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -96,7 +97,7 @@ def save_outputs(
     }
     meta_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    print("\n✅ 标定结果已保存")
+    print("\n标定结果已保存")
     print(f"矩阵文件: {matrix_path}")
     print(f"元数据文件: {meta_path}")
     print(f"平均回投误差: {mean_error:.3f} mm")
@@ -108,22 +109,26 @@ def main() -> int:
     args = build_parser().parse_args()
     image_points = []
 
+    # 获取指定相机
     cap = cv2.VideoCapture(args.index)
     if not cap.isOpened():
         print("[-] 无法打开摄像头。")
         return 1
 
+    # 指定分辨率
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
 
     actual_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or args.width
     actual_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or args.height
 
+    # 创建窗口并设置鼠标回调
     cv2.namedWindow(WINDOW_NAME)
     cv2.setMouseCallback(WINDOW_NAME, mouse_callback)
 
+    # 调试信息输出
     print("\n" + "=" * 50)
-    print("📷 四点标定工具")
+    print("四点标定工具")
     print("=" * 50)
     print(f"相机索引: {args.index}")
     print(f"分辨率: {actual_width}x{actual_height}")
@@ -132,6 +137,7 @@ def main() -> int:
     print("=" * 50 + "\n")
 
     while True:
+        # 获取帧
         ok, frame = cap.read()
         if not ok:
             print("[-] 无法读取摄像头画面。")
@@ -173,7 +179,7 @@ def main() -> int:
             if len(image_points) == 4:
                 break
             print(f"[!] 当前只选了 {len(image_points)} 个点，必须选满 4 个。")
-
+    # 释放资源
     cap.release()
     cv2.destroyAllWindows()
 

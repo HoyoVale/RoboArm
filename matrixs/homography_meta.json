@@ -1,0 +1,50 @@
+{
+  "camera_index": 1,
+  "image_width": 640,
+  "image_height": 480,
+  "point_order": "左上 -> 右上 -> 右下 -> 左下",
+  "image_points": [
+    [
+      171.0,
+      25.0
+    ],
+    [
+      410.0,
+      23.0
+    ],
+    [
+      409.0,
+      182.0
+    ],
+    [
+      172.0,
+      181.0
+    ]
+  ],
+  "robot_points": [
+    [
+      137.0,
+      -69.0
+    ],
+    [
+      137.0,
+      81.0
+    ],
+    [
+      237.0,
+      81.0
+    ],
+    [
+      237.0,
+      -69.0
+    ]
+  ],
+  "reprojection_errors_mm": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "mean_reprojection_error_mm": 0.0,
+  "max_reprojection_error_mm": 0.0
+}

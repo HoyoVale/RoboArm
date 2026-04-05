@@ -41,7 +41,7 @@ from tools.control.robot_arm_controller import RobotArmController
 
 `RobotArmController` 提供这些方法：
 
-- `move_angles({1: 60, 2: 70, 3: 60}, 800)`
+- `move_angles({1: 60, 2: 65, 3: 55}, 800)`
 - `move_pulses({1: 1500, 2: 1600}, 800)`
 - `pump_on()`
 - `pump_off()`
@@ -63,8 +63,8 @@ from tools.control.robot_arm_controller import RobotArmController
 ## 当前默认 Home 位姿
 
 - `1号 = 60°`
-- `2号 = 70°`
-- `3号 = 60°`
+- `2号 = 65°`
+- `3号 = 55°`
 
 如果已经执行过 `save_home()`，则重启后优先恢复已保存位姿。
 
@@ -89,7 +89,7 @@ from tools.control.robot_arm_controller import RobotArmController
 
 with RobotArmController(port="COM5", baud=9600) as arm:
     arm.home(800)
-    arm.move_angles({1: 60, 2: 70, 3: 60}, 800)
+    arm.move_angles({1: 60, 2: 65, 3: 55}, 800)
     arm.valve_close()
     arm.pump_on()
     arm.pump_off()
