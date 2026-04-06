@@ -8,6 +8,8 @@
   [robot_arm_controller.py](/mnt/d/hoyo/Documents/Projects/机械臂视觉抓取/tools/control/robot_arm_controller.py)
 - 命令行调试脚本：
   [arm_controller_sender.py](/mnt/d/hoyo/Documents/Projects/机械臂视觉抓取/tools/control/arm_controller_sender.py)
+- 运动学校准探针：
+  [kinematics_probe.py](/mnt/d/hoyo/Documents/Projects/机械臂视觉抓取/tools/control/kinematics_probe.py)
 - 最小示例脚本：
   [robot_arm_example.py](/mnt/d/hoyo/Documents/Projects/机械臂视觉抓取/tools/control/robot_arm_example.py)
 
@@ -116,3 +118,35 @@ arm.open()
 ```python
 arm.close()
 ```
+
+## 运动学校准建议
+
+如果要先脱离视觉系统校准运动学，建议直接使用：
+
+```bash
+python tools/control/kinematics_probe.py --port COM7 shell
+```
+
+进入后可用命令：
+
+- `model`
+- `ik 200 120 70`
+- `fk 60 65 55`
+- `goto 200 120 70 time=800`
+- `angles 60 65 55 time=800`
+- `home time=800`
+
+这个脚本会同时打印：
+
+- 当前模型参数
+- `IK` 的全部候选分支
+- 每个候选分支对应的 `θ1 / θ2`
+- 每个候选的 `FK` 回代坐标和误差
+- 闭链分支名与 `branch residual`
+- 最终选中的舵机角
+
+适合先确认：
+
+- 哪些桌面点可达
+- 新闭式 `IK`/`FK` 是否自洽
+- 实际落点与理论落点的误差方向
