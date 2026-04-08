@@ -1,0 +1,6 @@
+# 上位机视觉抓取与标定运行时依赖
+
+numpy>=1.24
+opencv-python>=4.8
+pyserial>=3.5
+ultralytics>=8.3

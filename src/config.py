@@ -38,7 +38,7 @@ SERIAL_PORT = "COM7"  # 串口名称
 SERIAL_BAUD = 9600  # 串口波特率
 
 # 抓取与放置参数。
-PICK_Z_MM = 30.0  # 抓取高度，单位 mm
+PICK_Z_MM = 60.0  # 抓取高度，单位 mm
 APPROACH_CLEARANCE_MM = 30.0  # 接近物体时的安全高度，单位 mm
 LIFT_CLEARANCE_MM = 100.0  # 抓取后提升的安全高度，单位 mm
 
@@ -57,7 +57,7 @@ GRAB_SETTLE_SEC = 2.0  # 抓取后稳定时间，单位 s
 RELEASE_SETTLE_SEC = 2.0  # 释放后稳定时间，单位 s
 
 # 触发策略参数。
-DEFAULT_TRIGGER_MODE = "manual"  # manual 或 auto
+DEFAULT_TRIGGER_MODE = "auto"  # manual 或 auto
 AUTO_STABLE_FRAMES = 10  # 自动模式下要求连续稳定的帧数
 AUTO_STABLE_POSITION_JITTER_MM = 10.0  # 自动模式下的位置抖动阈值，单位 mm
 AUTO_COOLDOWN_SEC = 3.0  # 自动模式下两次抓取之间的冷却时间，单位 s

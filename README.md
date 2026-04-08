@@ -1,152 +1,583 @@
-## 下位机开发流程及说明
+# 吸盘机械臂视觉抓取项目
 
-板子：
-![alt text](docs/开发板/51开发板.jpg)
-认识开发板：
-1. 右下角那个是 k1 开关，左off，右on，用来烧录代码和一些工具识别板子连接
-2. 右下角 k1 开关 左边是 USB 可连接上位机电脑
-3. 中间正下方的大开关是控制电源的开关，左 on，右 off 
-4. 左下角的绿色的模块就是接电源线的，电源7-8V的样子
-5. 最后是最左边六个蓝色的GPIO接口，由绿色模块外接电源供能
+本项目用于控制 3 自由度吸盘机械臂完成桌面物体识别与抓取。
 
-### 1. 硬件连接
-- 将开发板通过USB连接到电脑。
-- 首先安装驱动，确保电脑能够识别开发板。驱动安装包：`docs\程序固件以及下载教程\CH340 USB转串口驱动\CH341SER\CH341SER\SETUP.EXE`
-- 安装完成后，打开设备管理器，确认开发板被识别为一个串口设备（如COM6,可能会变化）。
+当前上位机能力包括：
+- 四点标定，将图像像素坐标映射到桌面坐标
+- YOLO 水果识别抓取
+- 红色物体颜色识别抓取
+- 串口控制下位机舵机、气泵和电磁阀
 
-- 舵机和气泵阀门接线：
-- ![alt text](docs/图片/接线图1.jpg)
-- ![alt text](docs/图片/接线图2.jpg)
-- 注意舵机、气泵、阀门都是最浅的那根为信号线，最深的那根接地线，红色接电源正极
-  1. 我将底部控制绕z轴旋转的舵机成为`1号`舵机，接蓝色的GPIO接口的 0号，也就是P50
-  2. 控制第一个大臂的（控制末端和小臂前伸后缩）的舵机为`2号`，接 P34
-  3. 最后一个舵机控制末端上下移动，命名为`3号`, 接P04
-  4. 气泵接P53
-  5. 电磁阀门接P05
+## 目录
 
-### 2. 硬件型号识别
-- 打开工具 `docs\程序固件以及下载教程\stc-isp-15xx-v6.85I.exe`
-- ![alt text](docs/image.png)
-- 操作：首先`k1`开关和`电源开关`还是关的，先选串口号为`COM6`或者`COM7`，然后点`检测MCU选项`,这时打开k1，就能自动识别到板子的各种型号信息了
-
-### 3. 代码编译和烧录
-1. 安装带有证书的`keil c51`,安装包：`KEIL5-51.zip`,注意安装时先关闭安全中心，内含破解工具，教程：https://blog.csdn.net/2301_78343139/article/details/130870622
-2. 我们的代码项目：`stc15_robot_arm_controller\STC15_RobotArm_Controller.uvproj`
-3. 安装好keil后用keil打开该项目文件并编译，得到编译后的二进制文件：`stc15_robot_arm_controller\Objects\STC15_RobotArm_Controller.hex`
-4. 然后可以烧录，步骤：打开烧录工具：`docs\程序固件以及下载教程\stc-isp-15xx-v6.85I.exe`，点击打开程序文件，选择`stc15_robot_arm_controller\Objects\STC15_RobotArm_Controller.hex`，然后保持`USB`连接，`电源开关`关闭，`k1`关闭，点击`下载/编程`,然后打开k1，此时软件能够检测到我们的`单片机`,自动烧录代码，最后检查是否烧录成功。
-
-### 4. 通信控制
-- 首先接好线后，一定要保持USB连接，关闭`k1`防止USB供电，然后打开`电源开关`,机械臂会自动回到初始位姿，这时可以通信控制了。
-我将通信模块写成python库，见：`tools`文件夹
-见 `tools\上位机通信模块说明.md`，里面写了初始位姿
-开发的时候直接调用`tools\robot_arm_controller.py`,里面的一些全局变量可以修改
-
-1. 舵机：
-    - ｛舵机编号，角度， 运动时间｝
-    - 编号之前接线的时候编好了
-    - 运动时间规定它必须在这个时间里完成动作，控制运动快慢
-2. 气泵就是 on 和 off
-3. 阀门就是 close（气道通畅）和 open（气道关闭，不供电时就是关闭的）
-
->>>
-
-# 吸盘机械臂视觉抓取上位机系统
-
-本项目为基于 STC15 3自由度（3-DOF）吸盘机械臂的上位机视觉控制系统。系统采用“降维”的标定策略（2D透视变换 + 高度补偿），避免了复杂的 3D 手眼标定，能够快速实现桌面级物体的视觉识别与抓取。
+- [目录结构](#目录结构)
+- [环境准备](#环境准备)
+  - [1. 硬件准备](#1-硬件准备)
+  - [2. Python 环境](#2-python-环境)
+  - [3. 下位机联通性检查](#3-下位机联通性检查)
+  - [4. 运动学校准检查](#4-运动学校准检查)
+- [四点标定步骤](#四点标定步骤)
+  - [1. 运行标定工具](#1-运行标定工具)
+  - [2. 选择四个图像点](#2-选择四个图像点)
+  - [3. 输入对应的桌面物理坐标](#3-输入对应的桌面物理坐标)
+  - [4. 标定输出](#4-标定输出)
+- [颜色识别抓取步骤](#颜色识别抓取步骤)
+  - [1. 功能说明](#1-功能说明)
+  - [2. 手动模式](#2-手动模式)
+  - [3. 自动模式](#3-自动模式)
+  - [4. 调试模式](#4-调试模式)
+- [YOLO 识别抓取步骤](#yolo-识别抓取步骤)
+  - [1. 功能说明](#1-功能说明-1)
+  - [2. 手动模式](#2-手动模式-1)
+  - [3. 自动模式](#3-自动模式-1)
+  - [4. 指定模型或阈值](#4-指定模型或阈值)
+- [`config.py` 使用说明](#configpy-使用说明)
+  - [1. 标定坐标修正](#1-标定坐标修正)
+  - [2. 运动学参数](#2-运动学参数)
+  - [3. 相机参数](#3-相机参数)
+  - [4. 串口参数](#4-串口参数)
+  - [5. 抓取与放置参数](#5-抓取与放置参数)
+  - [6. 动作时序参数](#6-动作时序参数)
+  - [7. 自动触发参数](#7-自动触发参数)
+  - [8. YOLO 参数](#8-yolo-参数)
+  - [9. 颜色识别参数](#9-颜色识别参数)
+- [命令行参数说明](#命令行参数说明)
+  - [1. 四点标定工具](#1-四点标定工具)
+  - [2. YOLO 抓取脚本](#2-yolo-抓取脚本)
+  - [3. 颜色抓取脚本](#3-颜色抓取脚本)
+- [推荐联调顺序](#推荐联调顺序)
+- [常见问题](#常见问题)
+  - [1. 程序提示找不到标定矩阵](#1-程序提示找不到标定矩阵)
+  - [2. 能识别目标，但程序不抓](#2-能识别目标但程序不抓)
+  - [3. 自动模式能识别但不稳定触发](#3-自动模式能识别但不稳定触发)
+  - [4. 抓取点偏差很大](#4-抓取点偏差很大)
+- [下位机说明](#下位机说明)
 
 ## 目录结构
-- `kinematics.py`: 核心逆运动学算法库，负责将目标三维坐标 `(X, Y, Z)` 转换为舵机控制角度。
-- `四点标定工具.py`: 简易的手眼标定工具，用于生成桌面平面的透视变换矩阵 `homography_matrix.npy`。
-- `主程序_A_YOLO11抓取.py`: 终极版抓取程序，使用 YOLOv11 进行目标检测，并根据物体类别自动应用不同的高度补偿。
-- `主程序_B_颜色识别抓取.py`: 基础验证版抓取程序，使用 OpenCV 的 HSV 色彩空间识别红色物体（无需深度学习模型）。
 
-## 坐标系定义
-为了让物理测量与代码逻辑完全统一，我们定义了以下直观的“物理世界坐标系”：
-- **观察视角**：站在机械臂正后方（线束所在侧）往前看。
-- **原点 (0, 0, 0)**：机械臂最底部黑色金属底座的中心点在桌面上的投影。
-- **X 轴**：正前方。用直尺量取目标点距离中心的直线长度（mm）。
-- **Y 轴**：左侧为正。用直尺量取目标点偏左或偏右的距离（mm）。
-- **Z 轴**：以**桌面**为绝对零点（Z=0）。物体距离桌面的垂直高度即为 Z 坐标（mm）。
+- `src/config.py`
+  运行时配置，包含相机、串口、抓取参数、运动学标定参数
+- `src/kinematics.py`
+  主链解析运动学与舵机标定层
+- `src/grasp_executor.py`
+  抓取执行器，负责“到目标上方 -> 下压 -> 吸取 -> 抬起 -> 放置”
+- `src/main_A_YOLO11_grab.py`
+  YOLO 识别抓取入口
+- `src/main_B_color_grab.py`
+  颜色识别抓取入口
+- `tools/calibration/four_point_calibration.py`
+  四点标定工具
+- `tools/control/robot_arm_controller.py`
+  上位机串口控制模块
+- `tools/control/kinematics_probe.py`
+  运动学校准与纯动作测试工具
+- `matrixs/homography_matrix.npy`
+  四点标定生成的单应矩阵
+- `matrixs/homography_meta.json`
+  四点标定元数据
 
-## 抓取失败原因深度剖析与优化指南
+## 环境准备
 
-如果你在运行主程序时，发现机械臂虽然动了，但吸盘落点与实际物体位置有偏差（抓偏了或者抓空了），这属于正常的物理映射误差。通常由以下几个原因导致：
+### 1. 硬件准备
 
-### 1. 标定矩阵 (Homography) 误差
-- **原因**：透视变换矩阵极度依赖你输入的 4 个点。如果在运行 `四点标定工具.py` 时，你用鼠标点击的像素位置，与你用尺子量出来的物理坐标 `(X, Y)` 对应得不够精准，算出来的矩阵就会自带误差。这就像地基没打好，上面盖的楼一定是歪的。
-- **优化**：
-  - 在桌面上画 4 个非常清晰的小十字准星。
-  - **手动把机械臂的吸盘移动到这 4 个十字准星上**，记录此时的物理坐标（可以自己量，或者通过舵机角度反推正运动学）。
-  - 在电脑屏幕上点击这 4 个点时，尽量放大点击，确保像素和物理坐标的对应精确到毫米。
+- 机械臂下位机已烧录可用固件
+- 机械臂上电后能正常回到 `home`
+- USB 摄像头已连接电脑
+- 开发板串口已在设备管理器中识别，例如 `COM7`
+- 舵机、气泵、电磁阀接线已确认无误
 
-### 2. 相机视角带来的透视畸变
-- **原因**：普通 USB 相机存在镜头畸变，且如果相机安装得太斜，画面边缘的物体就会发生严重的“透视偏移”。比如一个高 50mm 的橘子，在斜视的画面中，它的像素中心可能并不在它底部中心的正上方。
-- **优化**：
-  - **尽量把相机安装在机械臂正上方，垂直俯视抓取区域**。俯视角度越垂直，物体高度带来的透视偏移就越小。
-  - 尽量把抓取目标放在画面的中央区域，避免在边缘抓取。
+### 2. Python 环境
 
-### 3. Z 轴高度补偿不匹配
-- **原因**：我们的算法通过 `HEIGHT_COMPENSATION` 字典强行给物体指定了一个高度（比如 `target_z = 50`）。如果真实的橘子只有 30mm 高，逆运动学算法算出的三角形大臂和小臂的角度就会出错，导致不仅高度没降下去，连水平落点 `(X, Y)` 也会跟着发生联动偏移。
-- **优化**：
-  - 仔细测量目标物体的真实高度（最好是测量你希望吸盘吸住的那个面的高度）。
-  - 在代码的 `HEIGHT_COMPENSATION` 中精调这个数值。
-  - 也可以先让 `target_z = 0`（把物体当成一张纸贴在桌面上），看看机械臂能不能准确定位到它的正上方，如果能，说明 XY 没问题，纯粹是高度补偿没给对。
+推荐使用 Python 3.10。
 
-### 4. 机械硬件本身的回差与组装误差
-- **原因**：这种由航模舵机（比如常见的 MG996R）组装的机械臂，内部齿轮存在间隙（Backlash）。有时候你发同样的指令，它顺时针转过去和逆时针转过去，最终停留的物理位置能差出 5 毫米甚至 1 厘米。此外，连杆本身的刚性不足也会导致在不同姿态下产生微小形变。
-- **优化**：
-  - 这种硬件误差在软件层面极难完全消除。但因为我们使用的是**吸盘**（且带有弹簧缓冲），它本身就具备 1-2 厘米的容错能力。
-  - 你可以在代码中故意让 `target_z` 比真实高度**小 10mm**，让机械臂每次抓取都形成一个“下压”的动作，利用弹簧的形变去弥补位置的微小不准，确保吸盘能死死扣住物体。
+Windows PowerShell 示例：
 
-## 快速测试流程
-1. 固定相机位置，运行 `python 四点标定工具.py`。
-2. 在桌面上选 4 个点，输入测量的物理坐标，生成 `homography_matrix.npy`。
-3. 确保机械臂连接串口。
-4. 运行 `python 主程序_A_YOLO11抓取.py`。
-5. 将水果模型放入视野，画面提示识别成功后，按键盘 `g` 键触发抓取。
+```powershell
+cd D:\hoyo\Documents\Projects\机械臂视觉抓取
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
 
+`requirements.txt` 当前包含：
+- `numpy`
+- `opencv-python`
+- `pyserial`
+- `ultralytics`
 
-## 运动学建模
+### 3. 下位机联通性检查
 
-使用优化算法搜索解不是问题，还得是我自己找出问题关键所在，我们这个机械臂模型其实本来很简单，就是底座一号舵机控制x,y方向，然后二号舵机和三号舵机控制一个特殊的二连杆模型使得末端在一个二维平面内到达目标点
-所以我们接下来将当前运动学文件归档，然后按照下面的约定描述重建运动学模型：
-- 全局输出坐标系：
-  原点取 L1 与地面的接触点，
-  X 指向机械臂前方，Y 指向机械臂左侧，Z 竖直向上。
-- 一号舵机转到正确方向后，就可以在一个二维平面内计算一个二连杆的运动
+建议先用串口调试脚本确认机械臂能动：
 
-然后是二连杆的约束很简单，L1是竖直底座，只会由一号舵机控制绕z轴旋转，我们在由一号舵机控制的方向向量（x，y，0）与z轴唯一确定的竖直平面中建模二连杆模型：L2固定在底座L1上，L2与L1垂直，所以L2的一端坐标由L1的长度确定不变，另一端由一号舵机角度确定。L3一端连接L2，连接点的轴可以在一个平面内转动，由于一端由L2确定，所以另一端由二号舵机控制的L3的在竖直平面内转动角度确定。L4一端连接L3，连接点的轴也是只能在该同一个竖直平面内转动，L3会带动L4在平面内平移运动，但是不会带动L4转动，L4的角度只由三号舵机确定。你可以想象三号舵机不动时，L3无论怎么转动，L4只会以固定角度在竖直平面内平移运动。最后L5一端连接L4，一端连接L6，L5与L6也是始终在同一竖直平面运动，且L5始终平行xy平面，L6始终垂直xy平面，这两个杆也是受到角度不变，只会被L4带动在数值平面中平移运动。
+```powershell
+python tools\control\arm_controller_sender.py --port COM7 shell
+```
 
-- yaw_deg = servo1_deg - servo1_home
-  一号舵机带动整机绕竖直轴旋转。
-- theta1_deg = servo2_home - servo2_deg
-  theta1 表示 L3 相对竖直方向的转角。
-  servo2 增大时 theta1 变小，L3 向后收缩。
-- phi4_deg = servo3_deg - servo3_home
-  phi4 表示 L4 相对 home 位姿的下压角。
-  phi4 = 0 时 L4 水平；
-  phi4 为正表示 L4 下压；
-  servo3 增大时 phi4 变大，L4 下压。
+进入后可测试：
 
-### 当前运行时标定参数
+```text
+home 800
+angle 1:60 2:65 3:55 time=800
+valve close
+pump on
+pump off
+valve open
+```
 
-当前代码已经不是“纯几何 1:1 舵机角模型”，而是：
-- 主链解析模型
-- 外加三个舵机各自的比例标定层
+### 4. 运动学校准检查
 
-当前已确认可用的参数是：
+建议在接入视觉前先确认 `IK/FK` 和落点趋势正常：
+
+```powershell
+python tools\control\kinematics_probe.py --port COM7 shell
+```
+
+常用命令：
+
+```text
+model
+fk 60 65 55
+ik 200 100 70
+goto 200 100 70 time=800
+angles 60 65 55 time=800
+home time=800
+```
+
+## 四点标定步骤
+
+四点标定的作用是把图像像素坐标映射到机械臂桌面坐标。
+
+### 1. 运行标定工具
+
+```powershell
+python tools\calibration\four_point_calibration.py --index 1 --width 640 --height 480
+```
+
+参数说明：
+- `--index`
+  相机索引
+- `--width`
+  标定分辨率宽度
+- `--height`
+  标定分辨率高度
+
+### 2. 选择四个图像点
+
+按固定顺序点击：
+
+1. 左上
+2. 右上
+3. 右下
+4. 左下
+
+辅助按键：
+- `r`
+  清空已选点
+- `q` 或 `Esc`
+  选满 4 个点后进入物理坐标输入
+
+### 3. 输入对应的桌面物理坐标
+
+程序会要求输入 4 个机械臂桌面坐标，格式：
+
+```text
+200,100
+```
+
+注意：
+- 单位是 `mm`
+- 这 4 个点必须与点击顺序一一对应
+- 坐标系以机械臂底座为准：
+  - 原点：`L1` 与地面的接触点
+  - `X`：机械臂前方
+  - `Y`：机械臂左侧
+  - `Z`：竖直向上，桌面为 `0`
+
+### 4. 标定输出
+
+标定完成后会生成：
+- `matrixs/homography_matrix.npy`
+- `matrixs/homography_meta.json`
+
+运行抓取脚本时会强制检查：
+- 当前相机索引
+- 当前分辨率
+
+如果运行分辨率和标定分辨率不一致，程序会直接拒绝启动。
+
+## 颜色识别抓取步骤
+
+颜色识别版本用于快速联调，不依赖深度学习模型。
+
+### 1. 功能说明
+
+- 识别对象：红色物体
+- 抓取点：轮廓中心
+- 支持 `manual` 和 `auto`
+
+### 2. 手动模式
+
+```powershell
+python src\main_B_color_grab.py --mode manual --port COM7 --camera-index 1 --width 640 --height 480 --pick-z 70
+```
+
+操作方式：
+- `g`
+  对当前识别到的目标执行抓取
+- `q`
+  退出程序
+
+建议先用手动模式验证：
+- 标定是否准确
+- 运动学是否准确
+- 抓取和放置流程是否正常
+
+### 3. 自动模式
+
+```powershell
+python src\main_B_color_grab.py --mode auto --port COM7 --camera-index 1 --width 640 --height 480 --pick-z 70
+```
+
+自动模式逻辑：
+- 目标连续稳定若干帧后自动触发
+- 两次抓取之间有冷却时间
+- 抓取执行期间不会重复触发
+
+### 4. 调试模式
+
+如果怀疑“颜色识别到了，但不抓”，可以打开筛选调试：
+
+```powershell
+python src\main_B_color_grab.py --mode manual --port COM7 --camera-index 1 --width 640 --height 480 --pick-z 70 --debug-select
+```
+
+它会打印：
+- 轮廓数量
+- 轮廓半径
+- 对应桌面坐标
+- 是否被判定为可抓取
+
+## YOLO 识别抓取步骤
+
+YOLO 版本用于识别水果模型并抓取。
+
+### 1. 功能说明
+
+- 默认模型：`yolo11n.pt`
+- 默认允许类别：`apple`、`orange`、`banana`
+- 抓取点：检测框中心
+- 支持 `manual` 和 `auto`
+
+### 2. 手动模式
+
+```powershell
+python src\main_A_YOLO11_grab.py --mode manual --port COM7 --camera-index 1 --width 640 --height 480 --pick-z 70
+```
+
+### 3. 自动模式
+
+```powershell
+python src\main_A_YOLO11_grab.py --mode auto --port COM7 --camera-index 1 --width 640 --height 480 --pick-z 70
+```
+
+### 4. 指定模型或阈值
+
+```powershell
+python src\main_A_YOLO11_grab.py --mode auto --port COM7 --camera-index 1 --width 640 --height 480 --pick-z 70 --model yolo11n.pt --conf 0.6
+```
+
+## `config.py` 使用说明
+
+运行配置文件在 `src/config.py`。
+
+建议先改配置，再运行程序，不要边运行边改。
+
+### 1. 标定坐标修正
 
 ```python
-KINEMATICS_L6_NOMINAL_MM = 44.0
+WORKSPACE_SWAP_XY = False
+WORKSPACE_X_SIGN = 1.0
+WORKSPACE_Y_SIGN = 1.0
+WORKSPACE_X_OFFSET_MM = 0.0
+WORKSPACE_Y_OFFSET_MM = 0.0
+```
+
+用途：
+- 当四点标定得到的坐标轴与机械臂实际坐标轴不完全一致时，在这里做补偿
+
+含义：
+- `WORKSPACE_SWAP_XY`
+  是否交换 `X/Y`
+- `WORKSPACE_X_SIGN`
+  `X` 方向取反
+- `WORKSPACE_Y_SIGN`
+  `Y` 方向取反
+- `WORKSPACE_X_OFFSET_MM`
+  `X` 方向平移补偿
+- `WORKSPACE_Y_OFFSET_MM`
+  `Y` 方向平移补偿
+
+### 2. 运动学参数
+
+```python
+KINEMATICS_L6_NOMINAL_MM = 34.0
 SERVO1_YAW_SCALE = 1.85
 SERVO1_YAW_BIAS_DEG = 0.0
-SERVO2_THETA1_SCALE = 1.75
+SERVO2_THETA1_SCALE = 1.70
 SERVO2_THETA1_BIAS_DEG = 0.0
 SERVO3_PHI4_SCALE = 1.75
 SERVO3_PHI4_BIAS_DEG = 0.0
 ```
 
-当前工程结论：
-- 一号舵机的底座偏航不是严格 `1:1`，必须做单独标定，否则会出现侧向目标越远、工作区畸变越明显的问题。
-- 二号和三号舵机的几何角响应也不是严格 `1:1`，否则会造成前后和上下方向的量纲不对。
-- 当前 `goto` / 抓取执行器这类由 `IK` 驱动的动作，会先求小数角，再转成 `pulse` 下发，避免整数角带来的量化误差。
+用途：
+- 对 1、2、3 号舵机分别做角度比例和固定偏差标定
+
+当前模型约定：
+- `yaw_deg = servo1_deg - servo1_home`
+- `theta1_deg = servo2_home - servo2_deg`
+- `phi4_deg = servo3_deg - servo3_home`
+
+含义：
+- `SERVO1_YAW_SCALE`
+  一号舵机命令角到实际偏航角的比例
+- `SERVO1_YAW_BIAS_DEG`
+  一号舵机偏航固定偏差
+- `SERVO2_THETA1_SCALE`
+  二号舵机命令角到实际 `theta1` 的比例
+- `SERVO2_THETA1_BIAS_DEG`
+  二号舵机 `theta1` 固定偏差
+- `SERVO3_PHI4_SCALE`
+  三号舵机命令角到实际 `phi4` 的比例
+- `SERVO3_PHI4_BIAS_DEG`
+  三号舵机 `phi4` 固定偏差
+
+### 3. 相机参数
+
+```python
+CAMERA_INDEX = 1
+CAMERA_WIDTH = 1280
+CAMERA_HEIGHT = 720
+```
+
+用途：
+- 控制默认摄像头和默认分辨率
+
+### 4. 串口参数
+
+```python
+SERIAL_PORT = "COM7"
+SERIAL_BAUD = 9600
+```
+
+用途：
+- 指定下位机串口和波特率
+
+### 5. 抓取与放置参数
+
+```python
+PICK_Z_MM = 60.0
+APPROACH_CLEARANCE_MM = 30.0
+LIFT_CLEARANCE_MM = 100.0
+PLACE_X_MM = 200.0
+PLACE_Y_MM = 200.0
+PLACE_Z_MM = 70.0
+```
+
+含义：
+- `PICK_Z_MM`
+  抓取高度，单位 `mm`
+  参考零点是桌面 `Z=0`
+- `APPROACH_CLEARANCE_MM`
+  目标上方预留安全高度
+- `LIFT_CLEARANCE_MM`
+  抓取后提升高度
+- `PLACE_X_MM / PLACE_Y_MM / PLACE_Z_MM`
+  默认放置点
+
+注意：
+- `PICK_Z_MM`
+  决定真正抓取时吸盘中心的目标高度
+- 如果你把 `LIFT_CLEARANCE_MM` 改得太高，目标可能会被提前判成“不可达”
+
+### 6. 动作时序参数
+
+```python
+DEFAULT_GRAB_PUMP_MS = 500
+HOME_MOVE_MS = 800
+APPROACH_MOVE_MS = 800
+DESCEND_MOVE_MS = 800
+LIFT_MOVE_MS = 800
+PLACE_MOVE_MS = 800
+MOVE_SETTLE_SEC = 2.0
+GRAB_SETTLE_SEC = 2.0
+RELEASE_SETTLE_SEC = 2.0
+```
+
+用途：
+- 调整回位、接近、下压、抬起、放置等动作时间
+- 调整抓取后和释放后的稳定等待时间
+
+### 7. 自动触发参数
+
+```python
+DEFAULT_TRIGGER_MODE = "auto"
+AUTO_STABLE_FRAMES = 10
+AUTO_STABLE_POSITION_JITTER_MM = 10.0
+AUTO_COOLDOWN_SEC = 3.0
+```
+
+用途：
+- 控制自动抓取模式的触发条件和冷却时间
+
+### 8. YOLO 参数
+
+```python
+YOLO_ALLOWED_CLASSES = ("apple", "orange", "banana")
+YOLO_CONFIDENCE = 0.60
+```
+
+用途：
+- 限定允许抓取的类别
+- 设置默认置信度阈值
+
+### 9. 颜色识别参数
+
+```python
+COLOR_LABEL = "red"
+COLOR_MIN_RADIUS_PX = 20.0
+COLOR_LOWER_RED_1 = (0, 120, 70)
+COLOR_UPPER_RED_1 = (10, 255, 255)
+COLOR_LOWER_RED_2 = (170, 120, 70)
+COLOR_UPPER_RED_2 = (180, 255, 255)
+```
+
+用途：
+- 控制红色目标的 HSV 识别范围
+- `COLOR_MIN_RADIUS_PX` 用于过滤过小噪声目标
+
+## 命令行参数说明
+
+### 1. 四点标定工具
+
+```powershell
+python tools\calibration\four_point_calibration.py --index 1 --width 640 --height 480
+```
+
+参数：
+- `--index`
+  相机索引
+- `--width`
+  图像宽度
+- `--height`
+  图像高度
+
+### 2. YOLO 抓取脚本
+
+```powershell
+python src\main_A_YOLO11_grab.py --mode auto --port COM7 --camera-index 1 --width 640 --height 480 --pick-z 70
+```
+
+参数：
+- `--mode`
+  `manual` 或 `auto`
+- `--port`
+  串口号，例如 `COM7`
+- `--camera-index`
+  相机索引
+- `--width`
+  图像宽度
+- `--height`
+  图像高度
+- `--pick-z`
+  抓取高度，单位 `mm`
+- `--model`
+  YOLO 模型路径
+- `--conf`
+  置信度阈值
+- `--cooldown-sec`
+  自动模式冷却时间
+- `--stable-frames`
+  自动模式判稳所需连续帧数
+- `--stable-jitter-mm`
+  自动模式位置抖动阈值
+
+### 3. 颜色抓取脚本
+
+```powershell
+python src\main_B_color_grab.py --mode auto --port COM7 --camera-index 1 --width 640 --height 480 --pick-z 70
+```
+
+参数：
+- `--mode`
+  `manual` 或 `auto`
+- `--port`
+  串口号
+- `--camera-index`
+  相机索引
+- `--width`
+  图像宽度
+- `--height`
+  图像高度
+- `--pick-z`
+  抓取高度，单位 `mm`
+- `--cooldown-sec`
+  自动模式冷却时间
+- `--stable-frames`
+  自动模式判稳所需连续帧数
+- `--stable-jitter-mm`
+  自动模式位置抖动阈值
+- `--debug-select`
+  打印颜色目标筛选调试信息
+
+## 推荐联调顺序
+
+1. 用 `arm_controller_sender.py` 确认串口通信和气泵阀门正常
+2. 用 `kinematics_probe.py` 确认 `IK/FK` 和落点趋势正常
+3. 跑四点标定
+4. 先跑颜色识别手动模式
+5. 再跑 YOLO 手动模式
+6. 最后再开自动模式
+
+## 常见问题
+
+### 1. 程序提示找不到标定矩阵
+
+先重新做四点标定，确保以下文件存在：
+- `matrixs/homography_matrix.npy`
+- `matrixs/homography_meta.json`
+
+### 2. 能识别目标，但程序不抓
+
+常见原因：
+- 目标被 `can_execute_target()` 判为不可达
+- `pick-z` 不合适
+- `LIFT_CLEARANCE_MM` 或放置点设置过高
+- 当前分辨率和标定分辨率不一致
+
+### 3. 自动模式能识别但不稳定触发
+
+检查：
+- `AUTO_STABLE_FRAMES`
+- `AUTO_STABLE_POSITION_JITTER_MM`
+- `AUTO_COOLDOWN_SEC`
+
+### 4. 抓取点偏差很大
+
+优先检查：
+- 四点标定是否准确
+- `WORKSPACE_*` 坐标轴修正
+- 三个舵机标定参数
+- `PICK_Z_MM`
+
+## 下位机说明
+
+下位机工程位于：
+
+- `stc15_robot_arm_controller/`
+
+编译与刷写说明见：
+
+- `stc15_robot_arm_controller/README.md`
+- `tools/control/README.md`
+- `docs/机械臂参数/README.md`
