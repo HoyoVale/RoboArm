@@ -42,6 +42,18 @@ def _validate_move_time_ms(move_time_ms: int) -> None:
         raise ValueError("time 建议在 20 到 30000 之间")
 
 
+def angle_to_pulse(angle_deg: float) -> int:
+    if angle_deg < ANGLE_MIN or angle_deg > ANGLE_MAX:
+        raise ValueError("angle 只能是 0 到 180")
+    pulse_span = PULSE_MAX - PULSE_MIN
+    return int(round(PULSE_MIN + (float(angle_deg) / 180.0) * pulse_span))
+
+
+def angles_to_pulses(items: dict[int, float] | Iterable[tuple[int, float]]) -> list[tuple[int, int]]:
+    normalized = _normalize_items(items)
+    return [(servo_id, angle_to_pulse(value)) for servo_id, value in normalized]
+
+
 def _build_servo(items: dict[int, int] | Iterable[tuple[int, int]], mode: str, move_time_ms: int) -> str:
     _validate_move_time_ms(move_time_ms)
     normalized = _normalize_items(items)
@@ -71,6 +83,13 @@ def build_angle_command(items: dict[int, int] | Iterable[tuple[int, int]], move_
 
 def build_pulse_command(items: dict[int, int] | Iterable[tuple[int, int]], move_time_ms: int = HOME_MOVE_TIME_MS) -> str:
     return _build_servo(items, "P", move_time_ms)
+
+
+def build_angle_as_pulse_command(
+    items: dict[int, float] | Iterable[tuple[int, float]],
+    move_time_ms: int = HOME_MOVE_TIME_MS,
+) -> str:
+    return build_pulse_command(angles_to_pulses(items), move_time_ms)
 
 
 def build_home_command(move_time_ms: int = HOME_MOVE_TIME_MS) -> str:
@@ -128,6 +147,13 @@ class RobotArmController:
 
     def move_pulses(self, items: dict[int, int] | Iterable[tuple[int, int]], move_time_ms: int = HOME_MOVE_TIME_MS) -> str:
         return self.send_raw(build_pulse_command(items, move_time_ms))
+
+    def move_angles_precise(
+        self,
+        items: dict[int, float] | Iterable[tuple[int, float]],
+        move_time_ms: int = HOME_MOVE_TIME_MS,
+    ) -> str:
+        return self.send_raw(build_angle_as_pulse_command(items, move_time_ms))
 
     def pump_on(self) -> str:
         return self.send_raw("#PUMP1")

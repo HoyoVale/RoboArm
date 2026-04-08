@@ -12,11 +12,11 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.config import HOME_MOVE_MS, SERIAL_BAUD, SERIAL_PORT
 from src.kinematics import ForwardState, InverseCandidate, PalletizingArmKinematics
-from tools.control.robot_arm_controller import RobotArmController
+from tools.control.robot_arm_controller import RobotArmController, angles_to_pulses
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Probe closed-form kinematics and move the robot arm by XYZ targets.")
+    parser = argparse.ArgumentParser(description="Probe analytic main-chain kinematics and move the robot arm by XYZ targets.")
     parser.add_argument("--port", default=SERIAL_PORT, help="Serial port, for example COM7")
     parser.add_argument("--baud", type=int, default=SERIAL_BAUD, help="Serial baud rate")
 
@@ -58,11 +58,6 @@ def print_model(arm: PalletizingArmKinematics) -> None:
         f"L4={arm.L4:.1f}, L5={arm.L5:.1f}, L6={arm.L6_nominal:.1f}"
     )
     print(
-        f"  A: A1={arm.A1:.1f}, A2={arm.A2:.1f}, A3={arm.A3:.1f}, A4={arm.A4:.1f}, "
-        f"A5={arm.A5:.1f}, A6={arm.A6:.1f}, A7={arm.A7:.1f}, A8={arm.A8:.1f}"
-    )
-    print(f"  B: B1={arm.B1:.1f}, B2={arm.B2:.1f}, B3={arm.B3:.1f}")
-    print(
         f"  home : servo1={arm.servo1_home:.1f}, servo2={arm.servo2_home:.1f}, "
         f"servo3={arm.servo3_home:.1f}"
     )
@@ -70,6 +65,18 @@ def print_model(arm: PalletizingArmKinematics) -> None:
         f"  range: servo1=[{arm.servo1_cmd_min:.1f}, {arm.servo1_cmd_max:.1f}], "
         f"servo2=[{arm.servo2_min:.1f}, {arm.servo2_max:.1f}], "
         f"servo3=[{arm.servo3_min:.1f}, {arm.servo3_max:.1f}]"
+    )
+    print(
+        f"  yaw calibration: scale={arm.servo1_yaw_scale:.4f}, "
+        f"bias={arm.servo1_yaw_bias_deg:.2f}deg"
+    )
+    print(
+        f"  theta1 calibration: scale={arm.servo2_theta1_scale:.4f}, "
+        f"bias={arm.servo2_theta1_bias_deg:.2f}deg"
+    )
+    print(
+        f"  phi4 calibration: scale={arm.servo3_phi4_scale:.4f}, "
+        f"bias={arm.servo3_phi4_bias_deg:.2f}deg"
     )
 
 
@@ -80,15 +87,10 @@ def print_forward_state(state: ForwardState) -> None:
     )
     print(
         f"  yaw={state.yaw_deg:.2f}deg theta1={state.theta1_deg:.2f}deg "
-        f"theta2={state.theta2_deg:.2f}deg"
+        f"phi4={state.phi4_deg:.2f}deg"
     )
     print(f"  planar: radial={state.radial_mm:.2f} z={state.z_mm:.2f}")
-    print(
-        f"  branch={state.branch_name} "
-        f"left={state.left_branch}/{state.left_candidates} "
-        f"right={state.right_branch}/{state.right_candidates} "
-        f"residual={state.branch_residual_mm:.2f}mm"
-    )
+    print(f"  branch={state.branch_name}")
 
 
 def print_candidates(candidates: list[InverseCandidate]) -> None:
@@ -99,37 +101,49 @@ def print_candidates(candidates: list[InverseCandidate]) -> None:
     for candidate in candidates:
         print(
             f"  branch={candidate.branch} "
-            f"servo=({candidate.servo1_deg:.1f}, {candidate.servo2_deg:.1f}, {candidate.servo3_deg:.1f}) "
-            f"theta1={candidate.theta1_deg:.2f} theta2={candidate.theta2_deg:.2f} "
+            f"servo=({candidate.servo1_deg:.2f}, {candidate.servo2_deg:.2f}, {candidate.servo3_deg:.2f}) "
+            f"theta1={candidate.theta1_deg:.2f} phi4={candidate.phi4_deg:.2f} "
             f"fk=({candidate.fk_x_mm:.1f}, {candidate.fk_y_mm:.1f}, {candidate.fk_z_mm:.1f}) "
-            f"err={candidate.error_mm:.2f}mm residual={candidate.branch_residual_mm:.2f}mm"
+            f"err={candidate.error_mm:.3f}mm"
         )
 
 
-def print_ik_result(arm: PalletizingArmKinematics, x_mm: float, y_mm: float, z_mm: float) -> tuple[int, int, int] | None:
+def print_ik_result(
+    arm: PalletizingArmKinematics, x_mm: float, y_mm: float, z_mm: float
+) -> tuple[float, float, float] | None:
     print(f"[IK] target=({x_mm:.1f}, {y_mm:.1f}, {z_mm:.1f})")
     candidates = arm.inverse_kinematics_debug(x_mm, y_mm, z_mm)
     print_candidates(candidates)
     best = arm.inverse_kinematics(x_mm, y_mm, z_mm)
     if best is None:
+        print("  无合法解析解，未发送命令")
         return None
 
-    servo1, servo2, servo3 = (int(round(value)) for value in best)
-    print(f"  selected=({servo1}, {servo2}, {servo3})")
+    servo1, servo2, servo3 = best
+    pulses = dict(angles_to_pulses({1: servo1, 2: servo2, 3: servo3}))
+    print(f"  selected=({servo1:.2f}, {servo2:.2f}, {servo3:.2f})")
+    print(f"  pulse=({pulses[1]}, {pulses[2]}, {pulses[3]})")
     state = arm.forward_state(float(servo1), float(servo2), float(servo3))
     print(
         f"  selected_fk=({state.x_mm:.1f}, {state.y_mm:.1f}, {state.z_mm:.1f}) "
-        f"theta1={state.theta1_deg:.2f} theta2={state.theta2_deg:.2f}"
+        f"theta1={state.theta1_deg:.2f} phi4={state.phi4_deg:.2f}"
     )
     return servo1, servo2, servo3
 
 
-def move_to_xyz(controller: RobotArmController, arm: PalletizingArmKinematics, x_mm: float, y_mm: float, z_mm: float, move_time_ms: int) -> None:
+def move_to_xyz(
+    controller: RobotArmController,
+    arm: PalletizingArmKinematics,
+    x_mm: float,
+    y_mm: float,
+    z_mm: float,
+    move_time_ms: int,
+) -> None:
     servo_angles = print_ik_result(arm, x_mm, y_mm, z_mm)
     if servo_angles is None:
         return
     servo1, servo2, servo3 = servo_angles
-    sent = controller.move_angles({1: servo1, 2: servo2, 3: servo3}, move_time_ms)
+    sent = controller.move_angles_precise({1: servo1, 2: servo2, 3: servo3}, move_time_ms)
     print("  sent:", repr(sent))
 
 

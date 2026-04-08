@@ -25,7 +25,6 @@ from src.config import (
     SERIAL_BAUD,
     SERIAL_PORT,
     YOLO_ALLOWED_CLASSES,
-    YOLO_BBOX_FOOT_RATIO,
     YOLO_CONFIDENCE,
     YOLO_MODEL_PATH,
 )
@@ -52,11 +51,10 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def bbox_contact_point(x1: float, y1: float, x2: float, y2: float) -> tuple[int, int]:
-    height = max(1.0, y2 - y1)
-    contact_u = int(round((x1 + x2) * 0.5))
-    contact_v = int(round(y2 - height * YOLO_BBOX_FOOT_RATIO))
-    return contact_u, contact_v
+def bbox_center_point(x1: float, y1: float, x2: float, y2: float) -> tuple[int, int]:
+    center_u = int(round((x1 + x2) * 0.5))
+    center_v = int(round((y1 + y2) * 0.5))
+    return center_u, center_v
 
 
 def select_best_target(frame, model, workspace, executor, pick_z_mm: float, confidence_threshold: float):
@@ -74,8 +72,8 @@ def select_best_target(frame, model, workspace, executor, pick_z_mm: float, conf
 
             confidence = float(box.conf[0])
             x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-            contact_u, contact_v = bbox_contact_point(float(x1), float(y1), float(x2), float(y2))
-            target_x_mm, target_y_mm = workspace.pixel_to_table(contact_u, contact_v)
+            center_u, center_v = bbox_center_point(float(x1), float(y1), float(x2), float(y2))
+            target_x_mm, target_y_mm = workspace.pixel_to_table(center_u, center_v)
             if not executor.can_execute_target(target_x_mm, target_y_mm, pick_z_mm):
                 continue
 
@@ -85,8 +83,8 @@ def select_best_target(frame, model, workspace, executor, pick_z_mm: float, conf
                 best_target = TargetObservation(
                     label=class_name,
                     score=confidence,
-                    pixel_u=contact_u,
-                    pixel_v=contact_v,
+                    pixel_u=center_u,
+                    pixel_v=center_v,
                     x_mm=target_x_mm,
                     y_mm=target_y_mm,
                 )

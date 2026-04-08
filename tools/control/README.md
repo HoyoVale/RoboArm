@@ -45,6 +45,7 @@ from tools.control.robot_arm_controller import RobotArmController
 
 - `move_angles({1: 60, 2: 65, 3: 55}, 800)`
 - `move_pulses({1: 1500, 2: 1600}, 800)`
+- `move_angles_precise({1: 60.4, 2: 65.2, 3: 57.9}, 800)`
 - `pump_on()`
 - `pump_off()`
 - `valve_close()`
@@ -139,14 +140,24 @@ python tools/control/kinematics_probe.py --port COM7 shell
 这个脚本会同时打印：
 
 - 当前模型参数
-- `IK` 的全部候选分支
-- 每个候选分支对应的 `θ1 / θ2`
+- `IK` 求出的解析候选解，最多两组
+- 每个候选对应的 `θ1 / φ4`
 - 每个候选的 `FK` 回代坐标和误差
-- 闭链分支名与 `branch residual`
-- 最终选中的舵机角
+- 主链模型下的 `yaw / radial / z`
+- 最终选中的舵机角和对应 pulse
+
+说明：
+
+- `goto` 这类通过 `IK` 计算得到的动作，当前会优先用 `pulse` 模式下发，以保留小数角带来的精度。
+- `angles 60 65 55` 这类你手动输入的命令，仍然保留原来的整数角模式，方便人工调试。
+- 当前已经调好的几何标定参数保存在 [config.py](/mnt/d/hoyo/Documents/Projects/机械臂视觉抓取/src/config.py)：
+  - `SERVO1_YAW_SCALE = 1.85`
+  - `SERVO2_THETA1_SCALE = 1.75`
+  - `SERVO3_PHI4_SCALE = 1.75`
+  如果后续又重新校过，请同步改文档。
 
 适合先确认：
 
 - 哪些桌面点可达
-- 新闭式 `IK`/`FK` 是否自洽
+- 新主链解析 `IK`/`FK` 是否自洽
 - 实际落点与理论落点的误差方向

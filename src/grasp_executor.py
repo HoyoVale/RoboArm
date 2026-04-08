@@ -25,7 +25,7 @@ from src.config import (
     RELEASE_SETTLE_SEC,
 )
 from src.kinematics import PalletizingArmKinematics
-from tools.control.robot_arm_controller import RobotArmController
+from tools.control.robot_arm_controller import RobotArmController, angles_to_pulses
 
 
 class GraspExecutionError(RuntimeError):
@@ -86,34 +86,32 @@ class GraspExecutor:
         time.sleep(max(0.0, RELEASE_SETTLE_SEC - release_lead_sec))
         self._log("RELEASE", "release settle complete")
 
-    def _resolve_angles(self, x_mm: float, y_mm: float, z_mm: float) -> tuple[int, int, int]:
+    def _resolve_angles(self, x_mm: float, y_mm: float, z_mm: float) -> tuple[float, float, float]:
         angles = self.arm_ik.inverse_kinematics(x_mm, y_mm, z_mm)
         if angles is None:
             raise GraspExecutionError(
                 f"目标点不可达: x={x_mm:.1f}, y={y_mm:.1f}, z={z_mm:.1f}"
             )
-        servo_angles = tuple(int(round(angle)) for angle in angles)
         self._log(
             "IK",
             "xyz="
             f"({x_mm:.1f}, {y_mm:.1f}, {z_mm:.1f}) -> "
-            f"servo={servo_angles}",
+            f"servo=({angles[0]:.2f}, {angles[1]:.2f}, {angles[2]:.2f})",
         )
-        return servo_angles
+        return angles
 
     def _move_xyz(self, stage: str, x_mm: float, y_mm: float, z_mm: float, move_time_ms: int) -> None:
         servo1, servo2, servo3 = self._resolve_angles(x_mm, y_mm, z_mm)
+        pulses = dict(angles_to_pulses({1: servo1, 2: servo2, 3: servo3}))
         self._log(
             stage,
             "move_xyz "
             f"target=({x_mm:.1f}, {y_mm:.1f}, {z_mm:.1f}) "
-            f"servo=({servo1}, {servo2}, {servo3}) "
+            f"servo=({servo1:.2f}, {servo2:.2f}, {servo3:.2f}) "
+            f"pulse=({pulses[1]}, {pulses[2]}, {pulses[3]}) "
             f"time={move_time_ms}ms",
         )
-        self.arm_ctrl.move_angles(
-            {1: servo1, 2: servo2, 3: servo3},
-            move_time_ms=move_time_ms,
-        )
+        self.arm_ctrl.move_angles_precise({1: servo1, 2: servo2, 3: servo3}, move_time_ms=move_time_ms)
         self._sleep_after_move(move_time_ms)
         self._log(stage, "move complete")
 

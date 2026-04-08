@@ -20,7 +20,6 @@ from src.config import (
     CAMERA_HEIGHT,
     CAMERA_INDEX,
     CAMERA_WIDTH,
-    COLOR_CONTACT_BACKOFF_PX,
     COLOR_LABEL,
     COLOR_LOWER_RED_1,
     COLOR_LOWER_RED_2,
@@ -54,13 +53,15 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def contour_contact_point(contour: np.ndarray) -> tuple[int, int]:
-    ys = contour[:, 0, 1]
-    max_y = int(np.max(ys))
-    bottom_band = contour[ys >= max_y - 3][:, 0]
-    contact_u = int(round(float(np.mean(bottom_band[:, 0]))))
-    contact_v = max(0, max_y - COLOR_CONTACT_BACKOFF_PX)
-    return contact_u, contact_v
+def contour_center_point(contour: np.ndarray) -> tuple[int, int]:
+    moments = cv2.moments(contour)
+    if abs(moments["m00"]) > 1e-9:
+        center_u = int(round(moments["m10"] / moments["m00"]))
+        center_v = int(round(moments["m01"] / moments["m00"]))
+        return center_u, center_v
+
+    x, y, w, h = cv2.boundingRect(contour)
+    return int(round(x + w * 0.5)), int(round(y + h * 0.5))
 
 
 def select_best_target(frame, workspace, executor, pick_z_mm: float, debug: bool = False):
@@ -92,13 +93,13 @@ def select_best_target(frame, workspace, executor, pick_z_mm: float, debug: bool
                 )
             continue
 
-        contact_u, contact_v = contour_contact_point(contour)
-        target_x_mm, target_y_mm = workspace.pixel_to_table(contact_u, contact_v)
+        center_u, center_v = contour_center_point(contour)
+        target_x_mm, target_y_mm = workspace.pixel_to_table(center_u, center_v)
         can_execute = executor.can_execute_target(target_x_mm, target_y_mm, pick_z_mm)
         if debug:
             print(
                 f"[ColorSelect] contour#{index} "
-                f"radius={radius:.1f} pixel=({contact_u}, {contact_v}) "
+                f"radius={radius:.1f} pixel=({center_u}, {center_v}) "
                 f"table=({target_x_mm:.1f}, {target_y_mm:.1f}, {pick_z_mm:.1f}) "
                 f"reachable={can_execute}"
             )
@@ -108,15 +109,15 @@ def select_best_target(frame, workspace, executor, pick_z_mm: float, debug: bool
         target = TargetObservation(
             label=COLOR_LABEL,
             score=float(radius),
-            pixel_u=contact_u,
-            pixel_v=contact_v,
+            pixel_u=center_u,
+            pixel_v=center_v,
             x_mm=target_x_mm,
             y_mm=target_y_mm,
         )
         if debug:
             print(
                 f"[ColorSelect] selected contour#{index}: "
-                f"pixel=({contact_u}, {contact_v}) "
+                f"pixel=({center_u}, {center_v}) "
                 f"table=({target_x_mm:.1f}, {target_y_mm:.1f}, {pick_z_mm:.1f})"
             )
         return target, contour, mask

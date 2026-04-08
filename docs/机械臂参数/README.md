@@ -68,14 +68,60 @@ T = 三号舵机轴中心
 - 三号舵机角度范围：50° ~ 90°
 
 软件建模角定义：
+- 全局输出坐标系原点：`L1` 与地面的接触点
+- `FK/IK` 内部使用以 `S` 为原点的局部平面坐标；最后再换回以上全局坐标系
 - θ1 = servo2_home - servo2
-- θ2 = servo3_home - servo3
 - θ1 表示 L3 相对竖直方向的转角
-- θ2 表示 B1 相对初始位姿的转角变化
 - 当 servo2 增大时，θ1 减小，L3 向后收缩
-- 当 servo3 增大时，θ2 减小，B1 下降，L4 上抬
+- φ4 = servo3 - servo3_home
+- φ4 表示 L4 相对 home 位姿的下压角
+- φ4 = 0 时 L4 水平；φ4 为正表示 L4 下压
+- 当 servo3 增大时，φ4 增大，L4 下压
+
+当前已确认可用的软件标定层：
+- 一号舵机偏航：
+  - `yaw_actual = yaw_scale * (servo1_cmd - servo1_home) + yaw_bias`
+- 二号舵机几何角：
+  - `theta1_actual = theta1_scale * (servo2_home - servo2_cmd) + theta1_bias`
+- 三号舵机几何角：
+  - `phi4_actual = phi4_scale * (servo3_cmd - servo3_home) + phi4_bias`
+
+当前已调好的运行时参数（以 `src/config.py` 为准）：
+- `KINEMATICS_L6_NOMINAL_MM = 44.0`
+- `SERVO1_YAW_SCALE = 1.85`
+- `SERVO1_YAW_BIAS_DEG = 0.0`
+- `SERVO2_THETA1_SCALE = 1.75`
+- `SERVO2_THETA1_BIAS_DEG = 0.0`
+- `SERVO3_PHI4_SCALE = 1.75`
+- `SERVO3_PHI4_BIAS_DEG = 0.0`
+
+当前这组参数对应的工程结论：
+- 机械臂运行时使用“主链解析模型 + 三个舵机标定层”，而不是运行时闭链求解。
+- 一号舵机不是严格 `1:1` 偏航，需要单独做 `yaw_scale` 标定，否则会出现 `y` 越大、`x` 越小、`y` 越大的工作区畸变。
+- 二号和三号舵机也不是严格 `1:1` 几何角，需要分别做 `theta1_scale` 和 `phi4_scale` 标定。
+- 当前 `bias` 都保持为 `0.0`，说明目前主要是比例误差，不是固定零偏问题。
+- `IK` 继续走解析解，`goto` 等由 `IK` 驱动的动作继续使用 `pulse` 下发，以保留小数角精度。
 
 当前软件实现约定：
-- 左视图中的 `S1` 是由 `A1/A2` 刚性支架确定的基座固定铰点，不随 `servo2/L3` 一起旋转。
-- `FK` 先由左视图 `A` 链闭式求出一组末端候选，再由右视图 `B` 链求出 `L4` 姿态候选，最后按分支匹配选定实际姿态。
-- `IK` 不再使用旧的开链二连杆公式，而是基于新的闭式 `FK` 在舵机角空间做粗搜和细化搜索。
+- 运行时使用主链解析模型：
+  - `servo1` 先确定目标所在的竖直平面
+  - `servo2` 决定 `L3` 在该平面内的转角
+  - `servo3` 决定 `L4` 的绝对角
+  - `L4` 不会因为 `L3` 的运动改变自身角度，只会被 `L3` 带动平移
+- 主链求解顺序为：
+  - `S4 = L3` 末端
+  - `S5 = S4 + L4`
+  - `seat = S5 + 水平 L5`
+  - `end = seat - 竖直 L6`
+- 运行时完全忽略 `A1..A8`、`B1..B3` 的数值求解，它们只保留为机构说明。
+- `IK` 在局部平面内用两圆交点求最多两个几何候选：
+  - 圆 1：圆心 `S=(0,0)`，半径 `L3`
+  - 圆 2：圆心 `S5`，半径 `L4`
+  - 剩余合法候选中默认选最接近 home 的一组
+- 当前软件允许单独对一号舵机引入偏航标定层：
+  - `yaw_actual = yaw_scale * (servo1_cmd - servo1_home) + yaw_bias`
+  - 用于修正底座偏航不是严格 `1:1` 的实机误差
+- 当前软件也允许对二号、三号舵机引入几何角标定层：
+  - `theta1_actual = theta1_scale * (servo2_home - servo2_cmd) + theta1_bias`
+  - `phi4_actual = phi4_scale * (servo3_cmd - servo3_home) + phi4_bias`
+  - 用于修正 `L3` 转角和 `L4` 下压角不是严格 `1:1` 的实机误差
